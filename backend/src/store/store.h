@@ -2,11 +2,16 @@
  * SPDX-FileCopyrightText: 2026 Kebag-Logic
  * SPDX-License-Identifier: MIT
  *
- * On-disk persistence (BE-8): uploaded pcaps and session metadata live
- * under the data directory and survive backend restarts. Layout:
- *   <data>/users.json          (owned by Auth)
- *   <data>/meta.json           (pcap + session metadata, id counters)
- *   <data>/pcaps/<id>.pcap     (uploaded captures)
+ * On-disk persistence (BE-8): uploaded pcaps and sessions live under the
+ * data directory and survive backend restarts. Layout:
+ *   <data>/users.json                  (owned by Auth)
+ *   <data>/meta.json                   (metadata, id counters)
+ *   <data>/pcaps/<id>.pcap             (upload library)
+ *   <data>/sessions/<id>/capture.pcap  (the session's own pcap copy)
+ *   <data>/sessions/<id>/notes.md      (user-edited investigation notes)
+ *
+ * A session folder is self-contained: deleting the library upload (or the
+ * original server path) never breaks an existing investigation.
  */
 #pragma once
 
@@ -39,10 +44,23 @@ public:
     std::string pcapPath(const std::string& id) const;
     std::string pcapName(const std::string& id) const;
 
-    /** Persist session metadata; assigns and returns the session id. */
-    std::string addSession(SessionMeta meta);
-    void removeSession(const std::string& id);
+    /**
+     * Create the session folder: assigns the id, copies the source capture
+     * (library pcap or server path) to capture.pcap, seeds notes.md, and
+     * persists the metadata. Returns the id, or "" with err set.
+     */
+    std::string addSession(SessionMeta meta, std::string& err);
+    void removeSession(const std::string& id); // deletes the whole folder
     std::vector<SessionMeta> sessions() const;
+
+    std::string sessionDir(const std::string& id) const;
+    std::string sessionPcapPath(const std::string& id) const;
+    std::string sessionNotesPath(const std::string& id) const;
+
+    /** Investigation notes (markdown). Read returns "" when absent. */
+    std::string readNotes(const std::string& id) const;
+    bool writeNotes(const std::string& id, const std::string& markdown,
+                    std::string& err);
 
     static std::string nowIso8601();
 

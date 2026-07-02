@@ -129,6 +129,70 @@ function macAdd(mac, add) {
   }
 }
 
+/* ────────────────────────── minimal markdown (notes) ────────────────────────── */
+
+/* Tiny renderer for investigation notes: #/##/### headings, **bold**, *italic*,
+   `inline code`, fenced ``` blocks, "- " lists, [text](url) links, paragraphs.
+   Every source line is HTML-escaped BEFORE any transform, so notes content can
+   never inject markup. */
+function mdEscape(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function mdInline(s) {
+  /* input is already escaped; stash code spans so their contents stay verbatim */
+  const codes = [];
+  s = s.replace(/`([^`]+)`/g, (m, c) => {
+    codes.push(c);
+    return '\u0000' + (codes.length - 1) + '\u0000';
+  });
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+  s = s.replace(/\[([^\]]+)\]\(([^()\s]+)\)/g, (m, txt, url) =>
+    /^(https?:\/\/|\/|#|mailto:)/i.test(url)
+      ? '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + txt + '</a>'
+      : m);
+  return s.replace(/\u0000(\d+)\u0000/g, (m, k) => '<code>' + codes[+k] + '</code>');
+}
+
+function mdToHtml(src) {
+  const lines = String(src || '').split(/\r?\n/);
+  const out = [];
+  let para = [];
+  let list = [];
+  const endPara = () => { if (para.length) { out.push('<p>' + para.join(' ') + '</p>'); para = []; } };
+  const endList = () => { if (list.length) { out.push('<ul>' + list.join('') + '</ul>'); list = []; } };
+  for (let k = 0; k < lines.length; k++) {
+    const raw = lines[k];
+    if (/^```/.test(raw)) {
+      endPara(); endList();
+      const buf = [];
+      for (k++; k < lines.length && !/^```/.test(lines[k]); k++) buf.push(mdEscape(lines[k]));
+      out.push('<pre><code>' + buf.join('\n') + '</code></pre>');
+      continue;                        /* loop's k++ steps past the closing fence */
+    }
+    const hm = raw.match(/^(#{1,3})\s+(.+)$/);
+    if (hm) {
+      endPara(); endList();
+      const lvl = hm[1].length;
+      out.push('<h' + lvl + '>' + mdInline(mdEscape(hm[2])) + '</h' + lvl + '>');
+      continue;
+    }
+    const lm = raw.match(/^\s*-\s+(.+)$/);
+    if (lm) {
+      endPara();
+      list.push('<li>' + mdInline(mdEscape(lm[1])) + '</li>');
+      continue;
+    }
+    if (!raw.trim()) { endPara(); endList(); continue; }
+    endList();
+    para.push(mdInline(mdEscape(raw)));
+  }
+  endPara(); endList();
+  return out.join('\n');
+}
+
 /* ────────────────────────── auth + API ────────────────────────── */
 
 let token = localStorage.getItem(TOKEN_KEY) || '';
@@ -560,7 +624,7 @@ function sessionView(app, id) {
     query: '',
     selected: -1,            /* selected event index i, or -1 */
     lonePacket: 0,           /* packet number shown without a selected event */
-    tab: 'inspect',          /* 'inspect' | 'state' */
+    tab: 'inspect',          /* 'inspect' | 'state' | 'notes' */
     stateData: null,
     stateLoading: false,
     entityNames: new Map(),
@@ -674,6 +738,7 @@ function sessionView(app, id) {
   /* ── inspector DOM ── */
   const tabInspBtn = h('button', { class: 'tab active', type: 'button', onclick: () => setTab('inspect') }, 'Packet inspector');
   const tabStateBtn = h('button', { class: 'tab', type: 'button', onclick: () => setTab('state') }, 'State');
+  const tabNotesBtn = h('button', { id: 'tab-notes', class: 'tab', type: 'button', onclick: () => setTab('notes') }, 'Notes');
   const inspBody = h('div', { class: 'insp-body' });
 
   /* ── assemble ── */
@@ -701,7 +766,7 @@ function sessionView(app, id) {
       h('div', { class: 'session-main' },
         h('div', { class: 'events-panel' }, tableHead, tableBody, tableEmpty),
         h('div', { class: 'inspector-panel' },
-          h('div', { class: 'tabs' }, tabInspBtn, tabStateBtn),
+          h('div', { class: 'tabs' }, tabInspBtn, tabStateBtn, tabNotesBtn),
           inspBody,
         ),
       ),
@@ -880,6 +945,12 @@ function sessionView(app, id) {
   }
 
   function onKey(ev) {
+    if (S.tab === 'notes' && (ev.ctrlKey || ev.metaKey) && !ev.altKey
+        && (ev.key === 's' || ev.key === 'S')) {
+      ev.preventDefault();
+      saveNotes();
+      return;
+    }
     const t = ev.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) {
       if (ev.key === 'Escape') t.blur();
@@ -901,9 +972,11 @@ function sessionView(app, id) {
   /* ────────── inspector: packet + transition detail ────────── */
 
   function setTab(t) {
+    if (S.tab === 'notes' && t !== 'notes' && N.dirty) saveNotes();   /* auto-save on leave */
     S.tab = t;
     tabInspBtn.classList.toggle('active', t === 'inspect');
     tabStateBtn.classList.toggle('active', t === 'state');
+    tabNotesBtn.classList.toggle('active', t === 'notes');
     renderInspector();
   }
 
@@ -925,6 +998,7 @@ function sessionView(app, id) {
 
   function renderInspector() {
     if (S.tab === 'state') { renderStateTab(); return; }
+    if (S.tab === 'notes') { renderNotesTab(); return; }
     if (S.lonePacket > 0) {
       const holder = h('div', { class: 'insp-scroll' });
       inspBody.replaceChildren(holder);
@@ -1286,6 +1360,104 @@ function sessionView(app, id) {
         refreshBtn),
       entitySec, resvSec, vlanSec, domSec, maapSec, connSec, aecpSec,
     ));
+  }
+
+  /* ────────── inspector: notes tab ────────── */
+
+  const N = { loaded: false, loading: false, dirty: false, saving: false, preview: false };
+
+  const notesStatus = h('span', {
+    id: 'notes-status', class: 'notes-status dim small', dataset: { state: 'loading' },
+  }, 'loading…');
+  const notesSaveBtn = h('button', {
+    id: 'notes-save', class: 'btn btn-sm', type: 'button', disabled: true,
+    title: 'save notes (Ctrl+S)', onclick: () => saveNotes(),
+  }, 'Save');
+  const notesPreviewBtn = h('button', {
+    id: 'notes-preview-toggle', class: 'btn btn-ghost btn-sm', type: 'button',
+    'aria-pressed': 'false', title: 'toggle markdown preview', onclick: togglePreview,
+  }, 'Preview');
+  const notesTa = h('textarea', {
+    id: 'notes-editor', class: 'notes-editor', spellcheck: 'false', disabled: true,
+    placeholder: 'Investigation notes (markdown)…',
+  });
+  const notesPreview = h('div', { id: 'notes-preview', class: 'notes-preview', hidden: true });
+  const notesWrap = h('div', { class: 'notes-wrap' },
+    h('div', { class: 'notes-toolbar' },
+      notesSaveBtn, notesPreviewBtn,
+      h('span', { class: 'toolbar-spacer' }),
+      notesStatus),
+    notesTa, notesPreview,
+  );
+  notesTa.addEventListener('input', () => {
+    N.dirty = true;
+    if (!N.saving) setNotesStatus('dirty');
+  });
+
+  function setNotesStatus(state, msg) {
+    const text = { saved: 'saved', dirty: 'unsaved changes', saving: 'saving…', loading: 'loading…' };
+    notesStatus.dataset.state = state;
+    notesStatus.classList.toggle('errtext', state === 'error');
+    notesStatus.textContent = state === 'error' ? (msg || 'save failed') : text[state];
+  }
+
+  function renderNotesTab() {
+    if (notesWrap.parentNode !== inspBody) inspBody.replaceChildren(notesWrap);
+    if (!N.loaded && !N.loading) loadNotes();
+  }
+
+  async function loadNotes() {
+    if (N.loading || N.loaded || S.closed) return;
+    N.loading = true;
+    setNotesStatus('loading');
+    try {
+      const r = await api('/api/sessions/' + encodeURIComponent(id) + '/notes');
+      if (S.closed) return;
+      notesTa.value = (r && typeof r.markdown === 'string') ? r.markdown : '';
+      N.loaded = true;
+      N.dirty = false;
+      notesTa.disabled = false;
+      notesSaveBtn.disabled = false;
+      setNotesStatus('saved');
+      if (N.preview) notesPreview.innerHTML = mdToHtml(notesTa.value);
+    } catch (err) {
+      if (!S.closed) setNotesStatus('error', 'load failed: ' + err.message);
+    } finally {
+      N.loading = false;
+    }
+  }
+
+  async function saveNotes() {
+    if (!N.loaded || N.saving || S.closed) return;
+    N.saving = true;
+    notesSaveBtn.disabled = true;
+    setNotesStatus('saving');
+    const text = notesTa.value;
+    try {
+      await api('/api/sessions/' + encodeURIComponent(id) + '/notes', {
+        method: 'PUT', json: { markdown: text },
+      });
+      if (S.closed) return;
+      N.dirty = notesTa.value !== text;     /* stay dirty if edited mid-flight */
+      setNotesStatus(N.dirty ? 'dirty' : 'saved');
+    } catch (err) {
+      if (S.closed) return;
+      setNotesStatus('error', 'save failed: ' + err.message);
+      if (S.tab !== 'notes') toast('notes save failed: ' + err.message, 'error');
+    } finally {
+      N.saving = false;
+      notesSaveBtn.disabled = !N.loaded;
+    }
+  }
+
+  function togglePreview() {
+    N.preview = !N.preview;
+    notesPreviewBtn.setAttribute('aria-pressed', N.preview ? 'true' : 'false');
+    notesPreviewBtn.classList.toggle('active', N.preview);
+    if (N.preview) notesPreview.innerHTML = mdToHtml(notesTa.value);
+    notesTa.hidden = N.preview;
+    notesPreview.hidden = !N.preview;
+    if (!N.preview && !notesTa.disabled) notesTa.focus();
   }
 
   /* ────────── timeline: data ────────── */

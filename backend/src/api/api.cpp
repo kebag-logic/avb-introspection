@@ -130,6 +130,8 @@ void Api::handleApi(HttpRequest& req, HttpResponse& resp,
         if (tail.empty() && m == "DELETE") return handleSessionDelete(id, resp);
         if (tail == "events" && m == "GET") return handleEvents(req, id, resp);
         if (tail == "state" && m == "GET") return handleState(id, resp);
+        if (tail == "notes" && m == "GET") return handleNotesGet(id, resp);
+        if (tail == "notes" && m == "PUT") return handleNotesPut(req, id, resp);
         if (tail.rfind("packets/", 0) == 0 && m == "GET")
             return handlePacket(id, tail.substr(8), resp);
     }
@@ -250,8 +252,12 @@ void Api::handleSessionsPost(HttpRequest& req, HttpResponse& resp) {
     }
 
     Store::SessionMeta meta{"", s->name, s->pcapId, s->path, ""};
-    s->id = mStore.addSession(meta);
+    std::string serr;
+    s->id = mStore.addSession(meta, serr);
+    if (s->id.empty()) return jsonError(resp, 500, serr);
     s->createdAt = Store::nowIso8601();
+    // Analyze the session's own copy — the folder is self-contained.
+    s->pcapFilePath = mStore.sessionPcapPath(s->id);
     mEngine.start(s);
 
     resp.status = 201;
@@ -426,6 +432,28 @@ void Api::handlePacket(const std::string& id, const std::string& nStr,
     w.kv("hex", hexDump(bytes));
     w.endObj();
     resp.body = w.take();
+}
+
+// ----------------------------------------------------------------- notes -
+
+void Api::handleNotesGet(const std::string& id, HttpResponse& resp) {
+    if (!mEngine.find(id)) return jsonError(resp, 404, "no such session " + id);
+    JsonWriter w;
+    w.beginObj().kv("markdown", mStore.readNotes(id)).endObj();
+    resp.body = w.take();
+}
+
+void Api::handleNotesPut(HttpRequest& req, const std::string& id,
+                         HttpResponse& resp) {
+    if (!mEngine.find(id)) return jsonError(resp, 404, "no such session " + id);
+    std::string perr;
+    JsonValue body = JsonValue::parse(req.body, &perr);
+    const JsonValue* md = body.get("markdown");
+    if (!md || md->type != JsonValue::Type::String)
+        return jsonError(resp, 400, "body must be {\"markdown\": \"...\"}");
+    std::string err;
+    if (!mStore.writeNotes(id, md->str, err)) return jsonError(resp, 500, err);
+    resp.body = "{\"ok\":true}";
 }
 
 // ----------------------------------------------------------------- state -

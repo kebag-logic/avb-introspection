@@ -124,6 +124,21 @@ Returns every event in a compact parallel-array form for the timeline
 "kinds": ["packet","transition","error"],
 "events": [[i, n, ts, protoIdx, kindIdx, "type"], ...]}`
 
+## Investigation notes
+
+Every session is a folder on the backend holding its own copy of the
+capture plus a user-edited markdown file (`notes.md`, seeded with an
+investigation template at session creation).
+
+### GET /api/sessions/{id}/notes
+
+Response: `{"markdown": "# Investigation: trace.pcap\n\n..."}`
+
+### PUT /api/sessions/{id}/notes
+
+Request: `{"markdown": "<full replacement content>"}` (≤ 1 MiB).
+Response: `{"ok": true}`. 400 when `markdown` is missing or not a string.
+
 ## Packet inspector
 
 ### GET /api/sessions/{id}/packets/{n}   (n = 1-based packet number)

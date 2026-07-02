@@ -226,6 +226,19 @@ def phase_main():
     check(len(state["vlans"]) == 1 and state["vlans"][0]["vid"] == 2, "VLAN 2")
     check(all("history" in e for e in state["entities"]), "state history present")
 
+    # Investigation notes: seeded template, full-replace edit, validation.
+    st, nt = req("GET", f"/api/sessions/{sid}/notes", token=token)
+    check(st == 200 and nt["markdown"].startswith("# Investigation:"),
+          "notes seeded with template")
+    edited = "# My notes\n\n- edited via integration test\n"
+    st, _ = req("PUT", f"/api/sessions/{sid}/notes", {"markdown": edited},
+                token=token)
+    check(st == 200, "notes saved")
+    st, nt = req("GET", f"/api/sessions/{sid}/notes", token=token)
+    check(nt["markdown"] == edited, "notes round-trip")
+    st, _ = req("PUT", f"/api/sessions/{sid}/notes", {"nope": 1}, token=token)
+    check(st == 400, "bad notes body -> 400")
+
     st, mx = req("GET", "/api/metrics", token=token)
     check(all(k in mx for k in ("process", "pool", "sessions", "clients")),
           "metrics shape (NF-2)")
@@ -295,6 +308,10 @@ def phase_after_restart():
     st, state = req("GET", f"/api/sessions/{milan[0]['id']}/state", token=token)
     check(any(e["name"] == "Stage Box FOH" for e in state["entities"]),
           "state reconstructed after restart")
+
+    st, nt = req("GET", f"/api/sessions/{milan[0]['id']}/notes", token=token)
+    check(nt["markdown"] == "# My notes\n\n- edited via integration test\n",
+          "edited notes survived restart")
     print(f"after_restart phase: {'OK' if FAILS == 0 else f'{FAILS} FAILURES'}")
 
 

@@ -114,6 +114,9 @@ Two strictly separated components:
   may attach to the same analysis session and receive the same event stream.
 - **BE-8** — Uploaded pcaps and analysis sessions shall be persisted locally
   (on the mounted volume) and shall survive a backend restart.
+- **BE-9** — Each session shall be a self-contained folder holding its own
+  copy of the capture and a user-editable markdown investigation notes file
+  (`notes.md`, seeded from a template), exposed through the API.
 
 ### 5.3 Backend concurrency model (CO)
 
@@ -150,6 +153,8 @@ Two strictly separated components:
 - **FE-8** — Wherever an entity ID appears (timeline, state view, packet
   lists), the entity name learned via ADP/AECP shall be shown alongside it
   when available (PA-6).
+- **FE-9** — The session view shall include an investigation-notes editor
+  (markdown, with preview) backed by the session's `notes.md` (BE-9).
 
 ### 5.5 Security (SE)
 
@@ -185,6 +190,9 @@ Two strictly separated components:
   replayed against the decoders in CI.
 - **TV-3** — Frontend/backend integration shall be validated against at least
   one TSN-GEN-generated scenario (as a pcap in v1; live in v2).
+- **TV-4** — The web UI shall be exercised end-to-end in a real browser
+  (Playwright, headless Firefox) in CI: authentication, upload, analysis
+  views, state, and investigation notes.
 
 ## 8. Decision log
 

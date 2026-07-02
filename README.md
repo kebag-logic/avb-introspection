@@ -91,12 +91,25 @@ lands. `VarLayerContext::getBytes/setBytes` anticipates TSN-GEN's planned
 typed accessors for fields wider than `uint64_t` (e.g. the 64-byte AEM
 `entity_name`).
 
+## Investigation sessions
+
+Every analysis session is a self-contained folder under
+`data/sessions/<id>/` holding its own copy of the capture plus `notes.md`
+— markdown investigation notes seeded from a template and editable in the
+UI's **Notes** tab (with preview). Deleting a library upload never breaks
+an existing investigation, and notes survive restarts with the session.
+
 ## Testing
 
 ```bash
 make -j test                   # unit tests incl. golden-trace runs (TV-1/2)
 ./scripts/integration_test.sh  # black-box REST+WS test with restart (TV-3)
+python3 scripts/e2e_playwright.py   # browser E2E, headless Firefox (TV-4)
 ```
+
+The browser suite needs Playwright once: `pip install playwright &&
+playwright install firefox` (add `--with-deps` on Ubuntu;
+on other distros the GTK3/ALSA stack must be present).
 
 `tools/gen_pcaps.py` builds byte-exact golden scenarios per protocol
 (including malformed frames — decode errors become events, never crashes,

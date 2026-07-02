@@ -89,8 +89,7 @@ int main(int argc, char** argv) {
         s->pcapId = meta.pcapId;
         s->path = meta.path;
         s->createdAt = meta.createdAt;
-        s->pcapFilePath =
-            meta.pcapId.empty() ? meta.path : store.pcapPath(meta.pcapId);
+        s->pcapFilePath = store.sessionPcapPath(meta.id);
         engine.start(s);
         ++restored;
     }

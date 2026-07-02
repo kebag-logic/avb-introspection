@@ -46,6 +46,8 @@ private:
     void handleSessionGet(const std::string& id, HttpResponse&);
     void handleSessionDelete(const std::string& id, HttpResponse&);
     void handleEvents(HttpRequest&, const std::string& id, HttpResponse&);
+    void handleNotesGet(const std::string& id, HttpResponse&);
+    void handleNotesPut(HttpRequest&, const std::string& id, HttpResponse&);
     void handlePacket(const std::string& id, const std::string& nStr,
                       HttpResponse&);
     void handleState(const std::string& id, HttpResponse&);

@@ -8,6 +8,7 @@
 
 #include <cstdio>
 #include <ctime>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 
@@ -30,10 +31,12 @@ bool Store::init(const std::string& dataDir, std::string& err) {
         err = "cannot create data directory " + dataDir;
         return false;
     }
-    std::string pcapDir = dataDir + "/pcaps";
-    if (::mkdir(pcapDir.c_str(), 0755) != 0 && errno != EEXIST) {
-        err = "cannot create " + pcapDir;
-        return false;
+    for (const char* sub : {"/pcaps", "/sessions"}) {
+        std::string dir = dataDir + sub;
+        if (::mkdir(dir.c_str(), 0755) != 0 && errno != EEXIST) {
+            err = "cannot create " + dir;
+            return false;
+        }
     }
 
     std::ifstream f(dataDir + "/meta.json");
@@ -156,21 +159,98 @@ std::string Store::pcapName(const std::string& id) const {
     return {};
 }
 
-std::string Store::addSession(SessionMeta meta) {
+std::string Store::sessionDir(const std::string& id) const {
+    return mDataDir + "/sessions/" + id;
+}
+std::string Store::sessionPcapPath(const std::string& id) const {
+    return sessionDir(id) + "/capture.pcap";
+}
+std::string Store::sessionNotesPath(const std::string& id) const {
+    return sessionDir(id) + "/notes.md";
+}
+
+std::string Store::addSession(SessionMeta meta, std::string& err) {
     std::lock_guard lk(mMu);
-    meta.id = "s" + std::to_string(mNextSession++);
+    meta.id = "s" + std::to_string(mNextSession);
     meta.createdAt = nowIso8601();
+
+    // Session folder with its own capture copy — self-contained (BE-8).
+    std::string src =
+        meta.pcapId.empty() ? meta.path : pcapPath(meta.pcapId);
+    std::error_code ec;
+    std::filesystem::create_directories(sessionDir(meta.id), ec);
+    if (ec) {
+        err = "cannot create session folder: " + ec.message();
+        return "";
+    }
+    std::filesystem::copy_file(src, sessionPcapPath(meta.id),
+                               std::filesystem::copy_options::overwrite_existing,
+                               ec);
+    if (ec) {
+        err = "cannot copy capture into session folder: " + ec.message();
+        std::filesystem::remove_all(sessionDir(meta.id), ec);
+        return "";
+    }
+
+    // Seed the investigation notes the user edits in the UI.
+    {
+        std::ofstream f(sessionNotesPath(meta.id), std::ios::trunc);
+        f << "# Investigation: " << meta.name << "\n\n"
+          << "- Created: " << meta.createdAt << "\n"
+          << "- Capture: `" << meta.name << "`"
+          << (meta.pcapId.empty() ? " (from server path `" + meta.path + "`)"
+                                  : " (upload " + meta.pcapId + ")")
+          << "\n\n## Context\n\n_What is being investigated, and why?_\n\n"
+          << "## Findings\n\n- \n\n## Open questions\n\n- \n";
+    }
+
+    mNextSession++;
     mSessions.push_back(meta);
-    std::string err;
-    save(err); // metadata loss on failure is non-fatal; sessions still run
+    save(err); // metadata loss on failure is non-fatal; the session still runs
+    err.clear();
     return meta.id;
 }
 
 void Store::removeSession(const std::string& id) {
     std::lock_guard lk(mMu);
     std::erase_if(mSessions, [&](const SessionMeta& s) { return s.id == id; });
+    std::error_code ec;
+    std::filesystem::remove_all(sessionDir(id), ec);
     std::string err;
     save(err);
+}
+
+std::string Store::readNotes(const std::string& id) const {
+    std::lock_guard lk(mMu);
+    std::ifstream f(sessionNotesPath(id), std::ios::binary);
+    if (!f) return {};
+    std::stringstream ss;
+    ss << f.rdbuf();
+    return ss.str();
+}
+
+bool Store::writeNotes(const std::string& id, const std::string& markdown,
+                       std::string& err) {
+    std::lock_guard lk(mMu);
+    std::string path = sessionNotesPath(id);
+    std::string tmp = path + ".tmp";
+    {
+        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+        if (!f) {
+            err = "cannot write notes";
+            return false;
+        }
+        f.write(markdown.data(), (std::streamsize)markdown.size());
+        if (!f) {
+            err = "short write (disk full?)";
+            return false;
+        }
+    }
+    if (std::rename(tmp.c_str(), path.c_str()) != 0) {
+        err = "cannot replace notes file";
+        return false;
+    }
+    return true;
 }
 
 std::vector<Store::SessionMeta> Store::sessions() const {
