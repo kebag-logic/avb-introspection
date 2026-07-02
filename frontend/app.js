@@ -223,6 +223,11 @@ function authLost() {
   }
 }
 
+/* Path prefix the app is served under ("" at the site root). Lets a reverse
+   proxy mount the whole app at e.g. /avb_investigation/ with no rebuild:
+   every API/WS request below is made relative to this base. */
+const BASE = location.pathname.replace(/[^/]*$/, '').replace(/\/$/, '');
+
 /* api(path, opts) — fetch wrapper.
    opts: method, json (object body), body (raw body), contentType, auth:false to
    skip the bearer header and the 401-redirect (login/register). */
@@ -241,7 +246,7 @@ async function api(path, opts) {
   }
   let res;
   try {
-    res = await fetch(path, init);
+    res = await fetch(BASE + path, init);
   } catch (err) {
     throw new Error('network error — backend unreachable');
   }
@@ -1955,8 +1960,8 @@ function sessionView(app, id) {
     if (S.closed) return;
     let sock;
     const wsProto = location.protocol === 'https:' ? 'wss://' : 'ws://';
-    const url = wsProto + location.host + '/api/ws?token=' + encodeURIComponent(token)
-      + '&session=' + encodeURIComponent(id);
+    const url = wsProto + location.host + BASE + '/api/ws?token='
+      + encodeURIComponent(token) + '&session=' + encodeURIComponent(id);
     try {
       sock = new WebSocket(url);
     } catch (err) {
