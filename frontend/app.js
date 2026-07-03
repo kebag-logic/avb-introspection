@@ -1929,8 +1929,12 @@ function sessionView(app, id) {
     if (e) tlCenterOn(e.ts); /* keep the selection visible in the timeline */
     tlSchedule();
     if (opts.scroll) scrollToSelected();
-    if (S.tab !== 'inspect') setTab('inspect');
-    else renderInspector();
+    /* Selecting a packet keeps whatever tab is open on the right; it only
+       refreshes the Packet inspector when that is the active view (or when an
+       explicit navigation asked for it). Other tabs (State, Notes, Machines,
+       Info) are left untouched so editing / step-through state is preserved. */
+    if (opts.inspect && S.tab !== 'inspect') setTab('inspect');
+    else if (S.tab === 'inspect') renderInspector();
   }
 
   function clearSelection() {
@@ -1945,7 +1949,8 @@ function sessionView(app, id) {
   function jumpToPacket(n) {
     const i = S.nToI.get(n);
     if (i !== undefined) {
-      selectEvent(i, { scroll: true });
+      /* explicit "go to packet" link -> show the packet inspector */
+      selectEvent(i, { scroll: true, inspect: true });
     } else {
       S.selected = -1;
       S.lonePacket = n;
