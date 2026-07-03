@@ -179,6 +179,13 @@ public:
             w.kv("dest_mac", s.destMac ? macStr(s.destMac) : "");
             w.kv("vlan", (uint64_t)s.vlan);
             w.kv("probes_sent", (uint64_t)s.probes);
+            // Milan §5.6.4 Listener's discovery machine state for the bound
+            // talker (observed live via ADP availability).
+            w.kv("talker_discovered",
+                 s.state.empty() || s.state == "UNBOUND"
+                     ? "N/A"
+                     : (talkerAvailable(s.boundTalker) ? "TK_DISCOVERED"
+                                                       : "TK_NOT_DISCOVERED"));
             histJson(w, s.hist);
             w.endObj();
         }

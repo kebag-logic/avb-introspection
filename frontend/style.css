@@ -1249,6 +1249,121 @@ input.marker-label { width: 100%; }
   white-space: pre;
 }
 
+/* ── machines tab: Milan state-machine diagrams ──────────── */
+
+.machine-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.machine-controls label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: var(--muted);
+}
+.machine-controls select.input { max-width: 320px; }
+
+.machine-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin-bottom: 12px;
+  font-size: 11px;
+  color: var(--text-2);
+}
+.mleg { display: inline-flex; align-items: center; gap: 6px; }
+.mleg-sw {
+  width: 22px;
+  height: 13px;
+  border-radius: 3px;
+  border: 1.4px solid var(--border-strong);
+  background: #14171c;
+}
+.mleg-sw.a-active {
+  background: color-mix(in srgb, var(--accent) 24%, var(--panel));
+  border-color: var(--accent);
+  box-shadow: 0 0 4px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.mleg-sw.a-visited {
+  background: var(--raised);
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border-strong));
+}
+.mleg-sw.a-ref { border-style: dashed; }
+
+.machine-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+.machine-head { margin-bottom: 8px; }
+.machine-title { font-size: 13px; font-weight: 700; }
+.machine-sub { display: block; margin-top: 2px; }
+.machine-note {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.machine-note.mn-live {
+  color: var(--st-warn);
+  border-left: 2px solid color-mix(in srgb, var(--st-warn) 55%, transparent);
+  padding-left: 8px;
+}
+
+.sm-scroll { overflow-x: auto; overflow-y: hidden; }
+
+.sm-svg { display: block; }
+
+/* nodes */
+.sm-node { fill: #14171c; stroke: var(--border-strong); stroke-width: 1.4; }
+.sm-node.is-visited {
+  fill: var(--raised);
+  stroke: color-mix(in srgb, var(--sm-accent) 55%, var(--border-strong));
+}
+.sm-node.is-active {
+  fill: color-mix(in srgb, var(--sm-accent) 24%, var(--panel));
+  stroke: var(--sm-accent);
+  stroke-width: 2.4;
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--sm-accent) 60%, transparent));
+}
+/* reference machine (Advertise): dashed, muted — not tap-observable */
+.sm-ref .sm-node { stroke-dasharray: 5 3; }
+.sm-ref .sm-node.is-active { stroke-dasharray: none; }
+
+.sm-nid { fill: var(--text-2); font: 600 12px var(--mono); }
+.sm-nid.is-active, .sm-nid.is-visited { fill: var(--text); }
+.sm-nid.is-dim { fill: var(--dim); }
+.sm-nsub {
+  fill: var(--muted);
+  font: 600 8.5px var(--sans);
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+}
+.sm-nsub.is-dim { fill: var(--dim); opacity: 0.75; }
+
+/* edges */
+.sm-edge { fill: none; stroke: #59606b; stroke-width: 1.5; }
+.sm-edge.is-visited {
+  stroke: color-mix(in srgb, var(--sm-accent) 80%, transparent);
+  stroke-width: 1.9;
+}
+.sm-edge.is-recent {
+  stroke: var(--sm-accent);
+  stroke-width: 2.6;
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--sm-accent) 70%, transparent));
+}
+
+/* edge labels + their backing plate */
+.sm-elabel-bg { fill: var(--panel); opacity: 0.94; stroke: var(--border); stroke-width: 0.6; }
+.sm-elabel { font: 600 9px var(--mono); fill: var(--text-2); letter-spacing: 0.2px; }
+.sm-elabel.is-dim { fill: var(--muted); }
+.sm-elabel.is-recent { fill: var(--sm-accent); }
+
 /* narrow screens: stack the split */
 @media (max-width: 900px) {
   .session-main { flex-direction: column; }

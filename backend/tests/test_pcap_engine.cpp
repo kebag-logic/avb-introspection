@@ -386,6 +386,8 @@ TEST(golden_milan_binding) {
     CHECK(st.find("\"probing_status\":\"PROBING_DISABLED\"") != std::string::npos);
     CHECK(st.find("\"milan_talkers\"") != std::string::npos);
     CHECK(st.find("\"probes_received\":2") != std::string::npos);
+    // §5.6.4 discovery machine state exposed per sink (talker unbound at end).
+    CHECK(st.find("\"talker_discovered\":") != std::string::npos);
 }
 
 TEST(golden_malformed_never_crashes) {

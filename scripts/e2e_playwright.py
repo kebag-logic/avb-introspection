@@ -172,6 +172,20 @@ def run_tests(page, url):
     expect(page.locator(".erow .c-src", has_text="FOH Rack").first
            ).to_be_visible(timeout=5000)
 
+    # ---- Machines tab: spec state-machine diagrams with live overlay -------
+    page.locator("#tab-machines").click()
+    acmp = page.locator("#machine-acmp")
+    expect(acmp).to_be_visible(timeout=10000)
+    # The ACMP sink diagram has exactly one active (current-state) node.
+    expect(acmp.locator(".sm-node.is-active")).to_have_count(1)
+    # All four Milan machines are drawn.
+    for mid in ("machine-adp-entity", "machine-adp-advertise",
+                "machine-adp-discovery"):
+        expect(page.locator("#" + mid)).to_be_visible()
+    # Instance selectors are present.
+    expect(page.locator("#machine-sink")).to_be_visible()
+    expect(page.locator("#machine-entity")).to_be_visible()
+
     # ---- investigation notes (FE-9/BE-9) -----------------------------------
     page.locator("#tab-notes").click()
     notes = page.locator("#notes-editor")

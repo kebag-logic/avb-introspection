@@ -319,7 +319,12 @@ Every state object has a `history` array of
     "bound_talker": "0x001b92fffe000001", "bound_talker_unique_id": 0,
     "controller": "0x0000000000000099",
     "stream_id": "0x…", "dest_mac": "…", "vlan": 2,
-    "probes_sent": 3, "history": [...]
+    "probes_sent": 3,
+    "talker_discovered": "TK_DISCOVERED", // Milan §5.6.4 listener discovery
+                                          // machine for the bound talker:
+                                          // TK_DISCOVERED | TK_NOT_DISCOVERED |
+                                          // N/A (when UNBOUND)
+    "history": [...]
   }],
   "milan_talkers": [{               // Milan talkers are stateless (§5.5.2.7):
     "talker_entity": "0x001b92fffe000001", "talker_unique_id": 0,

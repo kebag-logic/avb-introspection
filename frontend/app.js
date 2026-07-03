@@ -68,6 +68,24 @@ function appendKids(el, kids) {
   }
 }
 
+/* SVG sibling of h(): the state-machine diagrams need createElementNS so the
+   nodes live in the SVG namespace (h() uses createElement and would build
+   HTML-namespaced, non-rendering elements). Attributes are all set verbatim. */
+const SVG_NS = 'http://www.w3.org/2000/svg';
+function svg(tag, attrs, ...children) {
+  const el = document.createElementNS(SVG_NS, tag);
+  if (attrs) {
+    for (const [k, v] of Object.entries(attrs)) {
+      if (v === null || v === undefined || v === false) continue;
+      if (k === 'class') el.setAttribute('class', v);
+      else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+      else el.setAttribute(k, v === true ? '' : String(v));
+    }
+  }
+  appendKids(el, children);
+  return el;
+}
+
 /* ────────────────────────── toasts ────────────────────────── */
 
 function toast(msg, kind) {
@@ -809,6 +827,326 @@ function kvList(pairs) {
   return kids.length ? h('div', { class: 'sobj-kv' }, kids) : null;
 }
 
+/* ────────────────────────── state-machine diagrams ──────────────────────────
+   drawMachine(container, def, live) renders one Milan/AVB state machine as an
+   SVG the way it appears in the spec, with the live reconstructed state
+   overlaid. Pure, module-level, theme-driven (see the .sm-* rules in the CSS).
+
+   def  = { title, subtitle, accent, view:{x,y,w,h}, minW, reference,
+            states:[{id,label?,sub?,x,y}], edges:[...], note? }
+   edge = { from, to, label?, labelAt?,
+            fromSide?/fromT?, toSide?/toT?,   // 'L'|'R'|'T'|'B' + 0..1 along it
+            curve?,                            // quadratic bend magnitude (signed)
+            via? }                             // [{x,y}] orthogonal waypoints
+   live = { current:'<stateId>'|null, history:[{from,to,...}], visited:Set } */
+
+const SM_NW = 152;    /* node width (user units) */
+const SM_NH = 46;     /* node height */
+let smUid = 0;        /* per-diagram id prefix so <marker> ids stay unique */
+
+function drawMachine(container, def, live) {
+  live = live || {};
+  const current = live.current || null;
+  const visited = live.visited || new Set();
+  const hist = Array.isArray(live.history) ? live.history : [];
+  const recent = hist.length ? hist[hist.length - 1] : null;
+  const histEdges = new Set(hist.map((t) => String(t.from) + '>' + String(t.to)));
+  const accent = def.accent || '#6ab0f3';
+  const uid = 'sm' + (smUid++);
+  const mkDim = uid + '-adim';
+  const mkAcc = uid + '-aacc';
+
+  const nodeById = new Map();
+  for (const s of def.states) nodeById.set(s.id, s);
+
+  let view = def.view;
+  if (!view) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const s of def.states) {
+      minX = Math.min(minX, s.x); minY = Math.min(minY, s.y);
+      maxX = Math.max(maxX, s.x + SM_NW); maxY = Math.max(maxY, s.y + SM_NH);
+    }
+    view = { x: minX - 30, y: minY - 30, w: (maxX - minX) + 60, h: (maxY - minY) + 60 };
+  }
+  const minW = def.minW || Math.round(view.w * 0.62);
+
+  const svgEl = svg('svg', {
+    class: 'sm-svg' + (def.reference ? ' sm-ref' : ''),
+    id: def.svgId || null,
+    viewBox: view.x + ' ' + view.y + ' ' + view.w + ' ' + view.h,
+    preserveAspectRatio: 'xMidYMid meet', role: 'img', 'aria-label': def.title,
+    style: 'width:100%;height:auto;max-width:' + view.w + 'px;min-width:'
+      + minW + 'px;--sm-accent:' + accent,
+  });
+
+  const marker = (id, fill) => svg('marker', {
+    id, viewBox: '0 0 10 10', refX: 8.5, refY: 5,
+    markerWidth: 9, markerHeight: 9, orient: 'auto', markerUnits: 'userSpaceOnUse',
+  }, svg('path', { d: 'M0,0 L10,5 L0,10 z', fill }));
+  svgEl.appendChild(svg('defs', null,
+    marker(mkDim, '#59606b'), marker(mkAcc, accent)));
+
+  const gEdges = svg('g', { class: 'sm-edges' });
+  const gNodes = svg('g', { class: 'sm-nodes' });
+  const gLabels = svg('g', { class: 'sm-labels' });
+  svgEl.appendChild(gEdges);
+  svgEl.appendChild(gNodes);
+  svgEl.appendChild(gLabels);
+
+  function sidePoint(nd, side, t) {
+    t = (t == null) ? 0.5 : t;
+    if (side === 'L') return { x: nd.x, y: nd.y + SM_NH * t };
+    if (side === 'R') return { x: nd.x + SM_NW, y: nd.y + SM_NH * t };
+    if (side === 'T') return { x: nd.x + SM_NW * t, y: nd.y };
+    return { x: nd.x + SM_NW * t, y: nd.y + SM_NH };   /* 'B' */
+  }
+  function autoAnchor(nd, tx, ty) {
+    const cx = nd.x + SM_NW / 2, cy = nd.y + SM_NH / 2;
+    const dx = tx - cx, dy = ty - cy;
+    if (dx === 0 && dy === 0) return { x: cx, y: cy };
+    const sx = dx !== 0 ? (SM_NW / 2) / Math.abs(dx) : Infinity;
+    const sy = dy !== 0 ? (SM_NH / 2) / Math.abs(dy) : Infinity;
+    const s = Math.min(sx, sy);
+    return { x: cx + dx * s, y: cy + dy * s };
+  }
+  function quadPt(a, c, b, t) {
+    const mt = 1 - t;
+    return {
+      x: mt * mt * a.x + 2 * mt * t * c.x + t * t * b.x,
+      y: mt * mt * a.y + 2 * mt * t * c.y + t * t * b.y,
+    };
+  }
+
+  function pathFor(e) {
+    const A = nodeById.get(e.from), B = nodeById.get(e.to);
+    if (!A || !B) return null;
+    if (e.from === e.to) {                       /* self-loop off the top edge */
+      const x1 = A.x + SM_NW * 0.62, x2 = A.x + SM_NW * 0.38, y0 = A.y;
+      return {
+        d: 'M ' + x1 + ' ' + y0 + ' C ' + (x1 + 20) + ' ' + (y0 - 48) + ' '
+          + (x2 - 20) + ' ' + (y0 - 48) + ' ' + x2 + ' ' + y0,
+        lbl: e.labelAt || { x: A.x + SM_NW / 2, y: y0 - 52 },
+      };
+    }
+    const Bc = { x: B.x + SM_NW / 2, y: B.y + SM_NH / 2 };
+    const Ac = { x: A.x + SM_NW / 2, y: A.y + SM_NH / 2 };
+    const a = e.fromSide ? sidePoint(A, e.fromSide, e.fromT) : autoAnchor(A, Bc.x, Bc.y);
+    const b = e.toSide ? sidePoint(B, e.toSide, e.toT) : autoAnchor(B, Ac.x, Ac.y);
+    if (e.via) {
+      let d = 'M ' + a.x + ' ' + a.y;
+      for (const p of e.via) d += ' L ' + p.x + ' ' + p.y;
+      d += ' L ' + b.x + ' ' + b.y;
+      return { d, lbl: e.labelAt || { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } };
+    }
+    const curve = e.curve || 0;
+    const dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy) || 1;
+    const c = { x: (a.x + b.x) / 2 - dy / len * curve, y: (a.y + b.y) / 2 + dx / len * curve };
+    return {
+      d: 'M ' + a.x + ' ' + a.y + ' Q ' + c.x + ' ' + c.y + ' ' + b.x + ' ' + b.y,
+      lbl: e.labelAt || quadPt(a, c, b, e.labelT == null ? 0.5 : e.labelT),
+    };
+  }
+
+  function edgeState(e) {
+    if (recent && String(recent.from) === e.from && String(recent.to) === e.to) return 'is-recent';
+    if (histEdges.has(e.from + '>' + e.to)) return 'is-visited';
+    return 'is-dim';
+  }
+
+  /* edges under nodes … */
+  const paths = [];
+  for (const e of def.edges) {
+    const pf = pathFor(e);
+    if (!pf) continue;
+    const st = edgeState(e);
+    gEdges.appendChild(svg('path', {
+      class: 'sm-edge ' + st, d: pf.d,
+      'marker-end': 'url(#' + (st === 'is-dim' ? mkDim : mkAcc) + ')',
+    }));
+    paths.push({ e, pf, st });
+  }
+
+  /* nodes */
+  for (const s of def.states) {
+    const nSt = s.id === current ? 'is-active'
+      : (visited.has(s.id) ? 'is-visited' : 'is-dim');
+    const cx = s.x + SM_NW / 2, cy = s.y + SM_NH / 2;
+    gNodes.appendChild(svg('rect', {
+      class: 'sm-node ' + nSt, x: s.x, y: s.y, width: SM_NW, height: SM_NH, rx: 9,
+    }));
+    gNodes.appendChild(svg('text', {
+      class: 'sm-nid ' + nSt, x: cx, y: s.sub ? cy - 5 : cy,
+      'text-anchor': 'middle', 'dominant-baseline': 'middle',
+    }, s.label || s.id));
+    if (s.sub) {
+      gNodes.appendChild(svg('text', {
+        class: 'sm-nsub ' + nSt, x: cx, y: cy + 12,
+        'text-anchor': 'middle', 'dominant-baseline': 'middle',
+      }, s.sub));
+    }
+  }
+
+  /* edge labels on top, each with a backing rect so the wire under it reads */
+  const charW = 5.35, lineH = 11;
+  for (const p of paths) {
+    if (!p.e.label) continue;
+    const lines = Array.isArray(p.e.label) ? p.e.label : [p.e.label];
+    let maxLen = 0;
+    for (const l of lines) maxLen = Math.max(maxLen, l.length);
+    const w = maxLen * charW + 9, hgt = lines.length * lineH + 3;
+    const lx = p.pf.lbl.x, ly = p.pf.lbl.y;
+    gLabels.appendChild(svg('rect', {
+      class: 'sm-elabel-bg', x: lx - w / 2, y: ly - hgt / 2, width: w, height: hgt, rx: 3,
+    }));
+    const text = svg('text', { class: 'sm-elabel ' + p.st, x: lx, y: ly, 'text-anchor': 'middle' });
+    const y0 = ly - (lines.length - 1) * lineH / 2;
+    lines.forEach((l, i) => text.appendChild(
+      svg('tspan', { x: lx, y: y0 + i * lineH, 'dominant-baseline': 'middle' }, l)));
+    gLabels.appendChild(text);
+  }
+
+  container.appendChild(svgEl);
+  return svgEl;
+}
+
+/* ── Milan v1.2 machine definitions (states, edges, spec-suggested layout) ──
+   Node ids match the /state JSON verbatim, so the live overlay is a string
+   match. Coordinates: probing column down the middle, settled states right,
+   unbound/passive on the left (per the spec sheet). */
+
+const ACMP_MACHINE = {
+  title: 'ACMP Listener Sink',
+  subtitle: 'Milan v1.2 §5.5.3, Figure 5.8 — probing / binding state machine',
+  svgId: 'machine-acmp', accent: PROTO_COLORS.ACMP,
+  view: { x: 0, y: 0, w: 772, h: 548 }, minW: 660,
+  states: [
+    { id: 'UNBOUND', x: 40, y: 20, sub: 'PROBING_DISABLED' },
+    { id: 'PRB_W_AVAIL', x: 40, y: 120, sub: 'PROBING_PASSIVE' },
+    { id: 'PRB_W_DELAY', x: 300, y: 120, sub: 'PROBING_ACTIVE' },
+    { id: 'PRB_W_RESP', x: 300, y: 220, sub: 'PROBING_ACTIVE' },
+    { id: 'PRB_W_RESP2', x: 300, y: 320, sub: 'PROBING_ACTIVE' },
+    { id: 'PRB_W_RETRY', x: 300, y: 420, sub: 'PROBING_ACTIVE' },
+    { id: 'SETTLED_NO_RSV', x: 560, y: 220, sub: 'PROBING_COMPLETED' },
+    { id: 'SETTLED_RSV_OK', x: 560, y: 320, sub: 'PROBING_COMPLETED' },
+  ],
+  edges: [
+    { from: 'UNBOUND', to: 'PRB_W_AVAIL', fromSide: 'B', fromT: 0.5, toSide: 'T', toT: 0.5,
+      label: ['RCV_BIND_RX_CMD', '(talker not discovered)'], labelAt: { x: 116, y: 92 } },
+    { from: 'UNBOUND', to: 'PRB_W_DELAY', fromSide: 'R', fromT: 0.5, toSide: 'T', toT: 0.30,
+      label: ['RCV_BIND_RX_CMD', '(talker discovered)'], labelAt: { x: 258, y: 74 } },
+    { from: 'PRB_W_AVAIL', to: 'PRB_W_DELAY', fromSide: 'R', fromT: 0.30, toSide: 'L', toT: 0.30,
+      label: 'EVT_TK_DISCOVERED', labelAt: { x: 246, y: 126 } },
+    { from: 'PRB_W_DELAY', to: 'PRB_W_AVAIL', fromSide: 'L', fromT: 0.72, toSide: 'R', toT: 0.72,
+      label: 'EVT_TK_DEPARTED', labelAt: { x: 246, y: 160 } },
+    { from: 'PRB_W_DELAY', to: 'PRB_W_RESP', fromSide: 'B', fromT: 0.5, toSide: 'T', toT: 0.5,
+      label: 'TMR_DELAY', labelAt: { x: 376, y: 192 } },
+    { from: 'PRB_W_RESP', to: 'SETTLED_NO_RSV', fromSide: 'R', fromT: 0.5, toSide: 'L', toT: 0.5,
+      label: 'RCV_PROBE_TX_RESP', labelAt: { x: 506, y: 234 } },
+    { from: 'PRB_W_RESP', to: 'PRB_W_RESP2', fromSide: 'B', fromT: 0.5, toSide: 'T', toT: 0.5,
+      label: 'TMR_NO_RESP', labelAt: { x: 376, y: 292 } },
+    { from: 'PRB_W_RESP', to: 'PRB_W_AVAIL', fromSide: 'L', fromT: 0.82, toSide: 'B', toT: 0.82,
+      curve: 16, label: 'EVT_TK_DEPARTED', labelAt: { x: 236, y: 206 } },
+    { from: 'PRB_W_RESP2', to: 'SETTLED_NO_RSV', fromSide: 'R', fromT: 0.32, toSide: 'B', toT: 0.35,
+      curve: -10, label: 'RCV_PROBE_TX_RESP', labelAt: { x: 523, y: 293 } },
+    { from: 'PRB_W_RESP2', to: 'PRB_W_RETRY', fromSide: 'B', fromT: 0.5, toSide: 'T', toT: 0.5,
+      label: 'TMR_NO_RESP', labelAt: { x: 376, y: 393 } },
+    { from: 'PRB_W_RESP2', to: 'PRB_W_AVAIL', fromSide: 'L', fromT: 0.70, toSide: 'B', toT: 0.62,
+      curve: 22, label: 'EVT_TK_DEPARTED', labelAt: { x: 214, y: 262 } },
+    { from: 'PRB_W_RETRY', to: 'PRB_W_RESP', fromSide: 'R', fromT: 0.5, toSide: 'R', toT: 0.5,
+      curve: 58, label: 'TMR_RETRY', labelAt: { x: 492, y: 343 } },
+    { from: 'PRB_W_RETRY', to: 'PRB_W_AVAIL', fromSide: 'L', fromT: 0.5, toSide: 'B', toT: 0.42,
+      curve: 30, label: 'EVT_TK_DEPARTED', labelAt: { x: 198, y: 318 } },
+    { from: 'SETTLED_NO_RSV', to: 'SETTLED_RSV_OK', fromSide: 'B', fromT: 0.35, toSide: 'T', toT: 0.35,
+      label: 'EVT_TK_REGISTERED', labelAt: { x: 636, y: 283 } },
+    { from: 'SETTLED_NO_RSV', to: 'PRB_W_DELAY', fromSide: 'T', fromT: 0.30, toSide: 'R', toT: 0.72,
+      label: 'TMR_NO_TK', labelAt: { x: 520, y: 184 } },
+    { from: 'SETTLED_NO_RSV', to: 'PRB_W_AVAIL', fromSide: 'B', fromT: 0.55, toSide: 'L', toT: 0.55,
+      via: [{ x: 620, y: 500 }, { x: 22, y: 500 }, { x: 22, y: 145 }],
+      label: 'EVT_TK_DEPARTED', labelAt: { x: 330, y: 491 } },
+    { from: 'SETTLED_RSV_OK', to: 'SETTLED_NO_RSV', fromSide: 'T', fromT: 0.70, toSide: 'B', toT: 0.70,
+      label: 'EVT_TK_UNREGISTERED', labelAt: { x: 636, y: 305 } },
+    { from: 'SETTLED_RSV_OK', to: 'PRB_W_AVAIL', fromSide: 'B', fromT: 0.62, toSide: 'L', toT: 0.78,
+      via: [{ x: 648, y: 522 }, { x: 8, y: 522 }, { x: 8, y: 156 }],
+      label: 'EVT_TK_DEPARTED', labelAt: { x: 300, y: 513 } },
+  ],
+  note: 'Global (rendered as this note to stay readable): any state → UNBOUND on '
+    + 'RCV_UNBIND_RX_CMD. EVT_TK_DEPARTED returns the sink to PRB_W_AVAIL from '
+    + 'every probing/settled state.',
+};
+
+const ADP_ENTITY_MACHINE = {
+  title: 'ADP Entity Lifecycle',
+  subtitle: 'Observer reconstruction — ADP ENTITY_AVAILABLE / ENTITY_DEPARTING / valid_time',
+  svgId: 'machine-adp-entity', accent: PROTO_COLORS.ADP,
+  view: { x: 0, y: 0, w: 772, h: 320 }, minW: 560,
+  states: [
+    { id: 'UNKNOWN', x: 40, y: 70, sub: 'not yet seen' },
+    { id: 'AVAILABLE', x: 300, y: 70, sub: 'advertising' },
+    { id: 'DEPARTING', x: 560, y: 70, sub: 'graceful leave' },
+    { id: 'TIMED_OUT', x: 300, y: 210, sub: 'valid_time lapsed' },
+  ],
+  edges: [
+    { from: 'UNKNOWN', to: 'AVAILABLE', fromSide: 'R', fromT: 0.5, toSide: 'L', toT: 0.5,
+      label: 'ENTITY_AVAILABLE', labelAt: { x: 246, y: 86 } },
+    { from: 'AVAILABLE', to: 'AVAILABLE', label: ['ENTITY_AVAILABLE', '(re-announce · avail_index)'] },
+    { from: 'AVAILABLE', to: 'DEPARTING', fromSide: 'R', fromT: 0.32, toSide: 'L', toT: 0.32,
+      label: 'ENTITY_DEPARTING', labelAt: { x: 506, y: 80 } },
+    { from: 'DEPARTING', to: 'AVAILABLE', fromSide: 'L', fromT: 0.70, toSide: 'R', toT: 0.70,
+      label: 'ENTITY_AVAILABLE', labelAt: { x: 506, y: 110 } },
+    { from: 'AVAILABLE', to: 'TIMED_OUT', fromSide: 'B', fromT: 0.4, toSide: 'T', toT: 0.4,
+      label: 'valid_time expired', labelAt: { x: 350, y: 160 } },
+    { from: 'TIMED_OUT', to: 'AVAILABLE', fromSide: 'T', fromT: 0.7, toSide: 'B', toT: 0.7,
+      label: 'ENTITY_AVAILABLE', labelAt: { x: 422, y: 176 } },
+  ],
+  note: 'Reconstructed from the passive capture — the observable projection of '
+    + 'the PAAD advertise machine below.',
+};
+
+const ADP_ADVERTISE_MACHINE = {
+  title: 'ADP Advertise (PAAD)',
+  subtitle: 'Milan v1.2 §5.6.3, Figure 5.9 — internal advertise machine (reference)',
+  svgId: 'machine-adp-advertise', accent: PROTO_COLORS.ADP, reference: true,
+  view: { x: 0, y: 0, w: 772, h: 210 }, minW: 560,
+  states: [
+    { id: 'DOWN', x: 40, y: 70, sub: 'link down' },
+    { id: 'WAITING', x: 300, y: 70, sub: 'advertising' },
+    { id: 'DELAY', x: 560, y: 70, sub: 'random delay' },
+  ],
+  edges: [
+    { from: 'DOWN', to: 'WAITING', fromSide: 'R', fromT: 0.35, toSide: 'L', toT: 0.35,
+      label: 'LINK_UP', labelAt: { x: 246, y: 82 } },
+    { from: 'WAITING', to: 'DOWN', fromSide: 'L', fromT: 0.70, toSide: 'R', toT: 0.70,
+      label: ['LINK_DOWN', '/ SHUTDOWN'], labelAt: { x: 246, y: 120 } },
+    { from: 'WAITING', to: 'DELAY', fromSide: 'R', fromT: 0.35, toSide: 'L', toT: 0.35,
+      label: ['RCV_ADP_DISCOVER |', 'TMR_ADVERTISE | GM_CHANGE'], labelAt: { x: 506, y: 44 } },
+    { from: 'DELAY', to: 'WAITING', fromSide: 'L', fromT: 0.70, toSide: 'R', toT: 0.70,
+      label: ['TMR_DELAY', '(ENTITY_AVAILABLE sent)'], labelAt: { x: 506, y: 140 } },
+    { from: 'DELAY', to: 'DOWN', fromSide: 'B', fromT: 0.5, toSide: 'B', toT: 0.6,
+      via: [{ x: 636, y: 174 }, { x: 120, y: 174 }], label: 'LINK_DOWN', labelAt: { x: 380, y: 166 } },
+  ],
+  note: 'Internal PAAD machine — not observable from a capture; the tool '
+    + 'reconstructs the observed projection (the ADP Entity Lifecycle above). '
+    + 'WAITING is tinted while the selected entity is AVAILABLE.',
+};
+
+const ADP_DISCOVERY_MACHINE = {
+  title: 'ADP Listener Discovery',
+  subtitle: 'Milan v1.2 §5.6.4, Figure 5.10 — talker discovery for the bound sink',
+  svgId: 'machine-adp-discovery', accent: PROTO_COLORS.ADP,
+  view: { x: 0, y: 0, w: 660, h: 232 }, minW: 520,
+  states: [
+    { id: 'TK_NOT_DISCOVERED', x: 60, y: 90, sub: 'talker absent' },
+    { id: 'TK_DISCOVERED', x: 430, y: 90, sub: 'talker present' },
+  ],
+  edges: [
+    { from: 'TK_NOT_DISCOVERED', to: 'TK_DISCOVERED', fromSide: 'R', fromT: 0.32, toSide: 'L', toT: 0.32,
+      label: 'RCV_ADP_AVAILABLE', labelAt: { x: 328, y: 100 } },
+    { from: 'TK_DISCOVERED', to: 'TK_NOT_DISCOVERED', fromSide: 'L', fromT: 0.70, toSide: 'R', toT: 0.70,
+      label: ['RCV_ADP_DEPARTING', '/ TMR_NO_ADP'], labelAt: { x: 328, y: 152 } },
+    { from: 'TK_DISCOVERED', to: 'TK_DISCOVERED', label: ['RCV_ADP_AVAILABLE', '(refresh)'] },
+  ],
+};
+
 /* ────────────────────────── admin view ────────────────────────── */
 
 function adminView(app) {
@@ -985,7 +1323,7 @@ function sessionView(app, id) {
     query: '',
     selected: -1,            /* selected event index i, or -1 */
     lonePacket: 0,           /* packet number shown without a selected event */
-    tab: 'inspect',          /* 'inspect' | 'state' | 'notes' | 'info' */
+    tab: 'inspect',          /* 'inspect' | 'state' | 'notes' | 'markers' | 'info' | 'machines' */
     stateData: null,
     stateLoading: false,
     infoData: null,          /* GET /info payload (capture, file, devices) */
@@ -1129,10 +1467,11 @@ function sessionView(app, id) {
   const tabNotesBtn = h('button', { id: 'tab-notes', class: 'tab', type: 'button', onclick: () => setTab('notes') }, 'Notes');
   const tabMarkersBtn = h('button', { id: 'tab-markers', class: 'tab', type: 'button', onclick: () => setTab('markers') }, 'Markers');
   const tabInfoBtn = h('button', { id: 'tab-info', class: 'tab', type: 'button', onclick: () => setTab('info') }, 'Info');
+  const tabMachinesBtn = h('button', { id: 'tab-machines', class: 'tab', type: 'button', onclick: () => setTab('machines') }, 'Machines');
   const inspBody = h('div', { class: 'insp-body' });
   const eventsPanel = h('div', { class: 'events-panel' }, tableHead, tableBody, tableEmpty);
   const inspectorPanel = h('div', { class: 'inspector-panel' },
-    h('div', { class: 'tabs' }, tabInspBtn, tabStateBtn, tabNotesBtn, tabMarkersBtn, tabInfoBtn),
+    h('div', { class: 'tabs' }, tabInspBtn, tabStateBtn, tabNotesBtn, tabMarkersBtn, tabInfoBtn, tabMachinesBtn),
     inspBody,
   );
   const mainSplit = h('div', { class: 'session-main' }, eventsPanel, inspectorPanel);
@@ -1459,6 +1798,8 @@ function sessionView(app, id) {
   /* ────────── selection ────────── */
 
   let inspNeedsEvent = -1;   /* selected-but-not-yet-loaded event index */
+  let machineSinkIdx = 0;    /* Machines tab: selected milan_sinks[] instance */
+  let machineEntityIdx = 0;  /* Machines tab: selected entities[] instance */
 
   function selectEvent(i, opts) {
     opts = opts || {};
@@ -1540,6 +1881,7 @@ function sessionView(app, id) {
     tabNotesBtn.classList.toggle('active', t === 'notes');
     tabMarkersBtn.classList.toggle('active', t === 'markers');
     tabInfoBtn.classList.toggle('active', t === 'info');
+    tabMachinesBtn.classList.toggle('active', t === 'machines');
     setPresenceView(t === 'notes' ? 'session/' + id + ':notes' : 'session/' + id);
     renderInspector();
   }
@@ -1565,6 +1907,7 @@ function sessionView(app, id) {
     if (S.tab === 'notes') { renderNotesTab(); return; }
     if (S.tab === 'markers') { renderMarkersTab(); return; }
     if (S.tab === 'info') { renderInfoTab(); return; }
+    if (S.tab === 'machines') { renderMachinesTab(); return; }
     if (S.lonePacket > 0) {
       const holder = h('div', { class: 'insp-scroll' });
       inspBody.replaceChildren(holder);
@@ -1760,6 +2103,7 @@ function sessionView(app, id) {
         if (en.entity_id && en.name) S.entityNames.set(en.entity_id, en.name);
       }
       if (S.tab === 'state') renderStateTab();
+      else if (S.tab === 'machines') renderMachinesTab();
     } catch (err) {
       if (!S.closed) toast('state: ' + err.message, 'error');
     } finally {
@@ -2014,6 +2358,141 @@ function sessionView(app, id) {
       entitySec, resvSec, vlanSec, domSec, maapSec, connSec,
       milanSinkSec, milanTalkerSec, aecpSec,
       gptpDomSec, gptpPortSec,
+    ));
+  }
+
+  /* ────────── inspector: machines tab ──────────
+     Draws the Milan v1.2 protocol state machines as spec diagrams with the
+     selected instance's reconstructed state overlaid (see drawMachine). */
+
+  /* option/short label for an entity id: user/AEM name if known, else the id */
+  function entText(idStr) {
+    return (idStr && S.entityNames.get(idStr)) || idStr || '?';
+  }
+
+  function sinkOptLabel(s) {
+    const l = entText(s.listener_entity) + ':'
+      + (s.listener_unique_id != null ? s.listener_unique_id : '?');
+    const t = s.bound_talker
+      ? entText(s.bound_talker) + ':' + (s.bound_talker_unique_id != null ? s.bound_talker_unique_id : '?')
+      : '—';
+    return l + ' → ' + t + '  [' + (s.state || '?') + ']';
+  }
+
+  /* live overlay: current = the reconstructed state, visited = every state that
+     appears as a from/to in the instance history (+ current) */
+  function histVisited(hist, current) {
+    const v = new Set();
+    for (const t of (hist || [])) { v.add(t.from); v.add(t.to); }
+    if (current) v.add(current);
+    return v;
+  }
+  function sinkLive(sink) {
+    if (!sink) return { current: null, history: [], visited: new Set() };
+    return { current: sink.state || null, history: sink.history || [],
+      visited: histVisited(sink.history, sink.state) };
+  }
+  function entityLive(en) {
+    if (!en) return { current: null, history: [], visited: new Set() };
+    return { current: en.state || null, history: en.history || [],
+      visited: histVisited(en.history, en.state) };
+  }
+  function advertiseLive(en) {
+    const cur = (en && en.state === 'AVAILABLE') ? 'WAITING' : null;
+    return { current: cur, history: [], visited: new Set(cur ? [cur] : []) };
+  }
+  function discoveryLive(sink) {
+    const cur = (sink && sink.talker_discovered && sink.talker_discovered !== 'N/A')
+      ? sink.talker_discovered : null;
+    const v = new Set();
+    if (cur) { v.add(cur); if (cur === 'TK_DISCOVERED') v.add('TK_NOT_DISCOVERED'); }
+    return { current: cur, history: [], visited: v };
+  }
+
+  function machineCard(def, live, liveNote) {
+    const scroll = h('div', { class: 'sm-scroll' });
+    drawMachine(scroll, def, live);
+    return h('div', { class: 'machine-card' },
+      h('div', { class: 'machine-head' },
+        h('span', { class: 'machine-title' }, def.title),
+        h('span', { class: 'machine-sub dim small' }, def.subtitle)),
+      scroll,
+      liveNote ? h('div', { class: 'machine-note mn-live' }, liveNote) : null,
+      def.note ? h('div', { class: 'machine-note' }, def.note) : null,
+    );
+  }
+
+  function machineLegend() {
+    const leg = (cls, txt) => h('span', { class: 'mleg' },
+      h('span', { class: 'mleg-sw ' + cls }), txt);
+    return h('div', { class: 'machine-legend' },
+      leg('a-active', 'active (current state)'),
+      leg('a-visited', 'reached (history)'),
+      leg('a-dim', 'not reached'),
+      h('span', { class: 'mleg' }, h('span', { class: 'mleg-sw a-ref' }),
+        'reference — not tap-observable'));
+  }
+
+  function renderMachinesTab() {
+    if (!S.stateData) {
+      inspBody.replaceChildren(placeholder(S.stateLoading
+        ? 'Loading state…' : 'State not loaded yet.'));
+      if (!S.stateLoading) loadState();
+      return;
+    }
+    const st = S.stateData;
+    const sinks = st.milan_sinks || [];
+    const entities = st.entities || [];
+    if (machineSinkIdx >= sinks.length) machineSinkIdx = 0;
+    if (machineEntityIdx >= entities.length) machineEntityIdx = 0;
+
+    const refreshBtn = h('button', { class: 'btn btn-sm', type: 'button' }, 'Refresh');
+    refreshBtn.addEventListener('click', () => { S.stateData = null; renderMachinesTab(); });
+
+    const sinkSel = h('select', {
+      id: 'machine-sink', class: 'input input-sm', disabled: !sinks.length,
+      title: 'Milan listener sink instance (drives the ACMP sink + discovery overlay)',
+    }, sinks.length
+      ? sinks.map((s, i) => h('option', { value: String(i) }, sinkOptLabel(s)))
+      : [h('option', { value: '0' }, 'no listener sinks observed')]);
+    sinkSel.value = String(machineSinkIdx);
+    sinkSel.addEventListener('change', () => {
+      machineSinkIdx = parseInt(sinkSel.value, 10) || 0;
+      renderMachinesTab();
+    });
+
+    const entSel = h('select', {
+      id: 'machine-entity', class: 'input input-sm', disabled: !entities.length,
+      title: 'ADP entity instance (drives the entity-lifecycle overlay)',
+    }, entities.length
+      ? entities.map((e, i) => h('option', { value: String(i) },
+          (e.name || e.entity_id || ('entity ' + i))))
+      : [h('option', { value: '0' }, 'no entities observed')]);
+    entSel.value = String(machineEntityIdx);
+    entSel.addEventListener('change', () => {
+      machineEntityIdx = parseInt(entSel.value, 10) || 0;
+      renderMachinesTab();
+    });
+
+    const sink = sinks[machineSinkIdx] || null;
+    const entity = entities[machineEntityIdx] || null;
+
+    inspBody.replaceChildren(h('div', { class: 'insp-scroll' },
+      h('div', { class: 'state-actions' },
+        h('span', { class: 'dim small' }, 'Milan v1.2 protocol state machines — live overlay'),
+        h('span', { class: 'toolbar-spacer' }),
+        refreshBtn),
+      h('div', { class: 'machine-controls' },
+        h('label', { for: 'machine-sink' }, 'ACMP sink / discovery'), sinkSel,
+        h('label', { for: 'machine-entity' }, 'ADP entity'), entSel),
+      machineLegend(),
+      machineCard(ACMP_MACHINE, sinkLive(sink),
+        sink ? null : 'No Milan listener sinks observed yet — showing the reference diagram.'),
+      machineCard(ADP_ENTITY_MACHINE, entityLive(entity),
+        entity ? null : 'No ADP entities observed yet — showing the reference diagram.'),
+      machineCard(ADP_ADVERTISE_MACHINE, advertiseLive(entity), null),
+      machineCard(ADP_DISCOVERY_MACHINE, discoveryLive(sink),
+        sink ? null : 'No bound sink selected — talker discovery is tracked per sink.'),
     ));
   }
 
