@@ -1452,6 +1452,122 @@ input.marker-label { width: 100%; }
   .mrp-trigger.flash { animation: none; }
 }
 
+/* ── topology tab: device/port graph + per-device machines ───── */
+
+.topo-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  align-items: center;
+  margin-bottom: 10px;
+  font-size: 11px;
+  color: var(--text-2);
+}
+.topo-legend .tl-item { display: inline-flex; align-items: center; gap: 7px; }
+.topo-legend .tl-line {
+  width: 24px;
+  height: 0;
+  border-top: 2px solid var(--c-gptp);
+  display: inline-block;
+}
+.topo-legend .tl-stream { border-top-style: dashed; border-top-color: var(--c-acmp); }
+
+/* the scrollable graph surface */
+.topo-scroll { padding: 2px 0 8px; }
+.topo-graph { position: relative; min-height: 40px; }
+
+.topo-svg { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+
+/* device cards float over the edge layer */
+.topo-node {
+  position: absolute;
+  z-index: 1;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  padding: 7px 9px;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.topo-node:hover { border-color: var(--accent); }
+.topo-node.is-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 4px 14px rgba(0, 0, 0, 0.5);
+}
+.topo-node-name {
+  font-weight: 700;
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.topo-node-mac {
+  font-size: 10.5px;
+  color: var(--text-2);
+  margin-top: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.topo-badges { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 5px; }
+.topo-protos { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 5px; }
+.topo-ports { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+
+.topo-port {
+  font: 600 10px var(--mono);
+  color: var(--c-gptp);
+  background: color-mix(in srgb, var(--c-gptp) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-gptp) 45%, transparent);
+  border-radius: 10px;
+  padding: 1px 7px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.topo-port:hover { filter: brightness(1.18); }
+.topo-port.is-selected {
+  background: color-mix(in srgb, var(--c-gptp) 26%, transparent);
+  box-shadow: 0 0 0 1px var(--c-gptp);
+}
+.topo-port .tp-role { color: var(--text-2); font-weight: 400; }
+
+/* role badges — reuse the .sbadge base, just recolor via --sc */
+.sbadge.rb-gm { --sc: var(--st-warn); }
+.sbadge.rb-master { --sc: var(--c-gptp); }
+.sbadge.rb-slave { --sc: var(--accent); }
+.sbadge.rb-talker { --sc: var(--c-acmp); }
+.sbadge.rb-listener { --sc: var(--c-adp); }
+.sbadge.rb-controller { --sc: var(--c-aecp); }
+.sbadge.rb-bridge { --sc: var(--c-other); }
+
+/* edges + their mid-labels */
+.topo-edge { fill: none; }
+.topo-edge.is-sync { stroke: var(--c-gptp); stroke-width: 1.8; }
+.topo-edge.is-stream { stroke: var(--c-acmp); stroke-width: 1.6; stroke-dasharray: 6 4; }
+.topo-elabel-bg { fill: var(--panel); opacity: 0.94; stroke: var(--border); stroke-width: 0.6; }
+.topo-elabel { font: 600 9px var(--mono); }
+.topo-elabel.is-sync { fill: var(--c-gptp); }
+.topo-elabel.is-stream { fill: var(--c-acmp); }
+
+/* per-device machines panel below the graph */
+.topo-panel-host { display: block; }
+.topo-panel { margin-top: 4px; }
+.mt4 { margin-top: 4px; }
+.topo-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 16px 0 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.topo-panel-head .machine-title { font-size: 14px; }
+.topo-panel-head .topo-badges { margin-top: 0; }
+.machine-card.is-focus {
+  border-color: color-mix(in srgb, var(--c-gptp) 60%, var(--border));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--c-gptp) 40%, transparent);
+}
+
 /* narrow screens: stack the split */
 @media (max-width: 900px) {
   .session-main { flex-direction: column; }

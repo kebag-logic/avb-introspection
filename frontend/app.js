@@ -1147,6 +1147,44 @@ const ADP_DISCOVERY_MACHINE = {
   ],
 };
 
+/* gPTP media-dependent Pdelay-request machine (802.1AS-2020 Clause 11) — the
+   initiator side of the peer-delay mechanism, reconstructed per port from the
+   observed Pdelay_Req / Pdelay_Resp / Pdelay_Resp_Follow_Up exchange. Node ids
+   match md.pdelay_req_state verbatim so the live overlay is a plain string
+   match; short labels keep the long enum boxes legible. Used by the Topology
+   tab's per-port view (the responder/sync states ride alongside as badges). */
+const GPTP_MD_PDELAY_REQ_MACHINE = {
+  title: 'gPTP MD Pdelay Request',
+  subtitle: '802.1AS-2020 Clause 11 — MDPdelayReq (peer-delay initiator)',
+  svgId: 'topo-machine-gptp-md', accent: PROTO_COLORS.GPTP,
+  view: { x: 0, y: -20, w: 740, h: 350 }, minW: 560,
+  states: [
+    { id: 'NOT_ENABLED', x: 40, y: 150, sub: 'port down' },
+    { id: 'WAITING_FOR_PDELAY_INTERVAL_TIMER', label: 'WAIT_INTERVAL', x: 290, y: 150, sub: 'idle · interval' },
+    { id: 'WAITING_FOR_PDELAY_RESP', label: 'WAIT_RESP', x: 540, y: 150, sub: 'req sent' },
+    { id: 'WAITING_FOR_PDELAY_RESP_FOLLOW_UP', label: 'WAIT_FOLLOW_UP', x: 540, y: 258, sub: 'resp seen' },
+    { id: 'RESET', x: 290, y: 30, sub: 'response lost' },
+  ],
+  edges: [
+    { from: 'NOT_ENABLED', to: 'WAITING_FOR_PDELAY_INTERVAL_TIMER',
+      fromSide: 'R', fromT: 0.5, toSide: 'L', toT: 0.5, label: 'portEnabled', labelAt: { x: 242, y: 166 } },
+    { from: 'WAITING_FOR_PDELAY_INTERVAL_TIMER', to: 'WAITING_FOR_PDELAY_RESP',
+      fromSide: 'R', fromT: 0.38, toSide: 'L', toT: 0.38, label: ['send', 'Pdelay_Req'], labelAt: { x: 492, y: 138 } },
+    { from: 'WAITING_FOR_PDELAY_RESP', to: 'WAITING_FOR_PDELAY_RESP_FOLLOW_UP',
+      fromSide: 'B', fromT: 0.5, toSide: 'T', toT: 0.5, label: 'RESP rx', labelAt: { x: 616, y: 227 } },
+    { from: 'WAITING_FOR_PDELAY_RESP_FOLLOW_UP', to: 'WAITING_FOR_PDELAY_INTERVAL_TIMER',
+      fromSide: 'L', fromT: 0.55, toSide: 'B', toT: 0.62, via: [{ x: 372, y: 305 }],
+      label: ['FOLLOW_UP rx', '/ compute delay'], labelAt: { x: 470, y: 312 } },
+    { from: 'WAITING_FOR_PDELAY_RESP', to: 'RESET',
+      fromSide: 'T', fromT: 0.5, toSide: 'R', toT: 0.5, curve: 30, label: 'timeout', labelAt: { x: 512, y: 74 } },
+    { from: 'RESET', to: 'WAITING_FOR_PDELAY_INTERVAL_TIMER',
+      fromSide: 'B', fromT: 0.5, toSide: 'T', toT: 0.5, label: 'restart', labelAt: { x: 384, y: 112 } },
+  ],
+  note: 'Reconstructed per port from observed peer-delay timing — a lost or late '
+    + 'Pdelay_Resp / Follow_Up drives MDPdelayReq to RESET (802.1AS 11.2.15). '
+    + 'The MDPdelayResp (responder) and MDSyncSend states are shown as badges above.',
+};
+
 /* ── MRP machines (IEEE 802.1Q) — the registration layer beneath MSRP/MVRP ──
    The Registrar (Table 10-4) is fully tap-observable, so it carries a live
    overlay; the Applicant (Table 10-3) is sender-internal, drawn as a reference
@@ -1471,7 +1509,7 @@ function sessionView(app, id) {
     query: '',
     selected: -1,            /* selected event index i, or -1 */
     lonePacket: 0,           /* packet number shown without a selected event */
-    tab: 'inspect',          /* 'inspect' | 'state' | 'notes' | 'markers' | 'info' | 'machines' */
+    tab: 'inspect',          /* 'inspect' | 'state' | 'notes' | 'markers' | 'info' | 'machines' | 'topology' */
     stateData: null,
     stateLoading: false,
     infoData: null,          /* GET /info payload (capture, file, devices) */
@@ -1616,10 +1654,11 @@ function sessionView(app, id) {
   const tabMarkersBtn = h('button', { id: 'tab-markers', class: 'tab', type: 'button', onclick: () => setTab('markers') }, 'Markers');
   const tabInfoBtn = h('button', { id: 'tab-info', class: 'tab', type: 'button', onclick: () => setTab('info') }, 'Info');
   const tabMachinesBtn = h('button', { id: 'tab-machines', class: 'tab', type: 'button', onclick: () => setTab('machines') }, 'Machines');
+  const tabTopologyBtn = h('button', { id: 'tab-topology', class: 'tab', type: 'button', onclick: () => setTab('topology') }, 'Topology');
   const inspBody = h('div', { class: 'insp-body' });
   const eventsPanel = h('div', { class: 'events-panel' }, tableHead, tableBody, tableEmpty);
   const inspectorPanel = h('div', { class: 'inspector-panel' },
-    h('div', { class: 'tabs' }, tabInspBtn, tabStateBtn, tabNotesBtn, tabMarkersBtn, tabInfoBtn, tabMachinesBtn),
+    h('div', { class: 'tabs' }, tabInspBtn, tabStateBtn, tabNotesBtn, tabMarkersBtn, tabInfoBtn, tabMachinesBtn, tabTopologyBtn),
     inspBody,
   );
   const mainSplit = h('div', { class: 'session-main' }, eventsPanel, inspectorPanel);
@@ -1934,6 +1973,7 @@ function sessionView(app, id) {
       S.infoData = info;
       rebuildDeviceNames();
       if (S.tab === 'info') renderInfoTab();
+      else if (S.tab === 'topology') renderTopologyTab();
       else if (S.tab === 'inspect') renderInspector();
       scheduleTable();               /* src/dst labels may have changed */
     } catch (err) {
@@ -1950,6 +1990,11 @@ function sessionView(app, id) {
   let machineEntityIdx = 0;  /* Machines tab: selected entities[] instance */
   let machineMrpIdx = -1;    /* Machines tab: selected mrp[] instance (-1 → last) */
   let mrpPlayTimer = 0;      /* Machines tab: MRP step-through auto-play interval */
+  let topoSelMac = null;     /* Topology tab: selected device MAC (lowercased) */
+  let topoSelPort = null;    /* Topology tab: focused gPTP port id, or null */
+  let topoModel = null;      /* last-built model, reused for selection-only updates */
+  let topoNodeEls = null;    /* Map(mac -> node element) from the last full render */
+  let topoPanelHost = null;  /* the panel container swapped on selection */
 
   function selectEvent(i, opts) {
     opts = opts || {};
@@ -2039,6 +2084,7 @@ function sessionView(app, id) {
     tabMarkersBtn.classList.toggle('active', t === 'markers');
     tabInfoBtn.classList.toggle('active', t === 'info');
     tabMachinesBtn.classList.toggle('active', t === 'machines');
+    tabTopologyBtn.classList.toggle('active', t === 'topology');
     setPresenceView(t === 'notes' ? 'session/' + id + ':notes' : 'session/' + id);
     renderInspector();
   }
@@ -2065,6 +2111,7 @@ function sessionView(app, id) {
     if (S.tab === 'markers') { renderMarkersTab(); return; }
     if (S.tab === 'info') { renderInfoTab(); return; }
     if (S.tab === 'machines') { renderMachinesTab(); return; }
+    if (S.tab === 'topology') { renderTopologyTab(); return; }
     if (S.lonePacket > 0) {
       const holder = h('div', { class: 'insp-scroll' });
       inspBody.replaceChildren(holder);
@@ -2261,6 +2308,7 @@ function sessionView(app, id) {
       }
       if (S.tab === 'state') renderStateTab();
       else if (S.tab === 'machines') renderMachinesTab();
+      else if (S.tab === 'topology') renderTopologyTab();
     } catch (err) {
       if (!S.closed) toast('state: ' + err.message, 'error');
     } finally {
@@ -2807,6 +2855,511 @@ function sessionView(app, id) {
     } else {
       drawReg(-1);
     }
+  }
+
+  /* ────────── inspector: topology tab ──────────
+     Device-centric navigation: a graph of the observed devices (endstations +
+     inferred bridges) with their gPTP-sync and stream relationships, and — for
+     the selected device or port — every reconstructed state machine, reusing
+     the Machines-tab renderer (drawMachine + machineCard + the machine defs).
+     The graph itself is a small bespoke renderer (HTML cards + an SVG edge
+     layer), NOT drawMachine. Built entirely from S.infoData + S.stateData. */
+
+  const TOPO_PAD = 18;
+  const TOPO_CARD_W = 200;
+  const TOPO_DX = TOPO_CARD_W + 56;   /* column pitch */
+  const TOPO_DY = 172;                /* row pitch (layered by gPTP hierarchy) */
+  const TOPO_ROLE_CLS = {
+    GM: 'rb-gm', MASTER: 'rb-master', SLAVE: 'rb-slave', Talker: 'rb-talker',
+    Listener: 'rb-listener', Controller: 'rb-controller', Bridge: 'rb-bridge',
+  };
+  const TOPO_ROLE_ORDER = ['GM', 'MASTER', 'SLAVE', 'Talker', 'Listener', 'Controller', 'Bridge'];
+
+  const tnorm = (s) => String(s == null ? '' : s).toLowerCase();
+  function isZeroId(x) { const s = tnorm(x); return !s || /^0x0+$/.test(s); }
+  function extractHex(s) { return String(s || '').match(/0x[0-9a-fA-F]+/g) || []; }
+  function shortStream(sid) {
+    const s = String(sid || '');
+    if (!s) return 'stream';
+    const c = s.lastIndexOf(':');
+    return c >= 0 ? '…' + s.slice(c) : s;
+  }
+
+  /* Correlate /info devices with the /state arrays into one node per MAC.
+     Returns { devices: Map(mac->node), entityToMac, entityToMacs, bridgesByDomain }. */
+  function buildTopologyModel() {
+    const info = S.infoData || {};
+    const st = S.stateData || {};
+    const devices = new Map();
+    function ensure(mac) {
+      const key = tnorm(mac);
+      if (!key) return null;
+      let n = devices.get(key);
+      if (!n) {
+        n = {
+          mac: key, entity_id: '', entity_name: '', name: '', label: key,
+          protocols: [], packets: 0, ports: [], entity: null,
+          milanSinks: [], mrp: [], roles: new Set(),
+          clockIds: new Set(), synthetic: false,
+        };
+        devices.set(key, n);
+      }
+      return n;
+    }
+    for (const d of info.devices || []) {
+      const n = ensure(d.mac);
+      if (!n) continue;
+      n.entity_id = d.entity_id || '';
+      n.entity_name = d.entity_name || '';
+      n.name = d.name || '';
+      n.protocols = (d.protocols || []).slice();
+      n.packets = d.packets || 0;
+      n.label = d.name || d.entity_name || d.mac;
+    }
+    /* one entity_id can map to several MACs (seamless redundancy); keep all so
+       a redundant device's roles/machines are not silently dropped. */
+    const entityToMacs = new Map();
+    for (const n of devices.values()) {
+      if (!n.entity_id) continue;
+      const k = tnorm(n.entity_id);
+      const arr = entityToMacs.get(k) || [];
+      if (!arr.includes(n.mac)) arr.push(n.mac);
+      entityToMacs.set(k, arr);
+    }
+    const macsFor = (id) => entityToMacs.get(tnorm(id)) || [];
+    const entityToMac = new Map();   /* first MAC per entity — single-endpoint edges */
+    for (const [k, arr] of entityToMacs) entityToMac.set(k, arr[0]);
+
+    const gptp = st.gptp || {};
+    const gmClocks = new Set();
+    for (const dom of gptp.domains || []) {
+      const gm = dom.grandmaster || {};
+      if (gm.clock_identity) gmClocks.add(tnorm(gm.clock_identity));
+      if (dom.sync_gm) gmClocks.add(tnorm(dom.sync_gm));
+    }
+    /* gPTP ports attach by src_mac (creating a node if the port's source was
+       never seen as a device); MASTER/SLAVE roles come straight off the port. */
+    const localClocks = new Set();
+    for (const p of gptp.ports || []) {
+      const n = ensure(p.src_mac);
+      if (!n) continue;
+      n.ports.push(p);
+      if (!n.protocols.includes('GPTP')) n.protocols.push('GPTP');
+      const clk = tnorm(p.clock_identity || String(p.port || '').split(':')[0]);
+      if (clk) { n.clockIds.add(clk); localClocks.add(clk); }
+      if (p.role === 'MASTER') n.roles.add('MASTER');
+      else if (p.role === 'SLAVE') n.roles.add('SLAVE');
+    }
+    for (const n of devices.values()) {
+      for (const clk of n.clockIds) { if (gmClocks.has(clk)) { n.roles.add('GM'); break; } }
+    }
+    for (const en of st.entities || []) {
+      for (const mac of macsFor(en.entity_id)) {
+        const n = devices.get(mac); if (!n) continue;
+        n.entity = en;
+        if (en.talker_sources > 0) n.roles.add('Talker');
+        if (en.listener_sinks > 0) n.roles.add('Listener');
+      }
+    }
+    for (const s of st.milan_sinks || []) {
+      for (const mac of macsFor(s.listener_entity)) {
+        const n = devices.get(mac); if (n) { n.milanSinks.push(s); n.roles.add('Listener'); }
+      }
+      for (const cm of macsFor(s.controller)) { const n = devices.get(cm); if (n) n.roles.add('Controller'); }
+    }
+    for (const t of st.milan_talkers || []) {
+      for (const mac of macsFor(t.talker_entity)) { const n = devices.get(mac); if (n) n.roles.add('Talker'); }
+    }
+    for (const c of st.connections || []) {
+      if (!isZeroId(c.talker_entity)) for (const m of macsFor(c.talker_entity)) devices.get(m).roles.add('Talker');
+      if (!isZeroId(c.listener_entity)) for (const m of macsFor(c.listener_entity)) devices.get(m).roles.add('Listener');
+      if (!isZeroId(c.controller_entity)) for (const m of macsFor(c.controller_entity)) devices.get(m).roles.add('Controller');
+    }
+    for (const r of st.reservations || []) {
+      const tn = ensure(r.talker_mac);
+      if (tn) tn.roles.add('Talker');
+      for (const l of r.listeners || []) { const ln = ensure(l.mac); if (ln) ln.roles.add('Listener'); }
+      /* failure_bridge is a clock/bridge identity (8 bytes), NOT a device MAC —
+         route it through the synthetic-bridge path, never a device node. */
+      if (r.failure_bridge && !isZeroId(r.failure_bridge)) {
+        const t = tnorm(r.failure_bridge), bkey = 'clk:' + t;
+        let bn = devices.get(bkey);
+        if (!bn) { bn = ensure(bkey); bn.label = 'bridge ' + t; bn.synthetic = true; bn.protocols = ['MSRP']; }
+        bn.roles.add('Bridge'); bn.clockIds.add(t);
+      }
+    }
+    for (const m of st.mrp || []) {
+      const n = ensure(m.source);
+      if (n) n.mrp.push(m);
+    }
+    /* path-trace bridges: clock identities in the path that are neither the GM
+       nor a local endstation become synthetic (inferred) bridge nodes. */
+    const bridgesByDomain = new Map();
+    for (const dom of gptp.domains || []) {
+      const brs = [];
+      for (const tk of extractHex(dom.path_trace)) {
+        const t = tnorm(tk);
+        if (gmClocks.has(t) || localClocks.has(t)) continue;
+        const key = 'clk:' + t;
+        let bn = devices.get(key);
+        if (!bn) { bn = ensure(key); bn.label = 'bridge ' + t; bn.synthetic = true; bn.protocols = ['GPTP']; }
+        bn.roles.add('Bridge'); bn.clockIds.add(t);
+        brs.push(key);
+      }
+      if (brs.length) bridgesByDomain.set(dom.domain, brs);
+    }
+    return { devices, entityToMac, entityToMacs, bridgesByDomain };
+  }
+
+  /* Edges: gPTP sync (master→slave per domain, chained through path-trace
+     bridges when present) + streams (ACMP connections and MSRP reservations,
+     talker→listener). Deduped by kind|from|to; endpoints must be known nodes. */
+  function buildTopoEdges(model) {
+    const st = S.stateData || {};
+    const gptp = st.gptp || {};
+    const edges = [];
+    const seen = new Set();
+    const add = (kind, from, to, label) => {
+      from = tnorm(from); to = tnorm(to);
+      if (!from || !to || from === to) return;
+      if (!model.devices.has(from) || !model.devices.has(to)) return;
+      /* label carries the domain (sync) / stream id (stream), so keeping it in
+         the key preserves dual-domain sync links and distinct streams. */
+      const key = kind + '|' + from + '|' + to + '|' + (label || '');
+      if (seen.has(key)) return;
+      seen.add(key);
+      edges.push({ kind, from, to, label });
+    };
+    /* Sync flows from ONE source per domain — the grandmaster — down to each
+       slave (chained through any path-trace bridges). A masters×slaves product
+       would invent links between unrelated master/slave pairs, so we resolve a
+       single source instead: the device holding the GM clock, else the sole
+       master; if neither is identifiable we draw nothing rather than guess. */
+    const domInfo = new Map();
+    for (const dom of gptp.domains || []) domInfo.set(dom.domain, dom);
+    const portDomains = new Set((gptp.ports || []).map((p) => p.domain));
+    for (const domNum of portDomains) {
+      const dom = domInfo.get(domNum) || {};
+      const gmIds = new Set();
+      if (dom.grandmaster && dom.grandmaster.clock_identity) gmIds.add(tnorm(dom.grandmaster.clock_identity));
+      if (dom.sync_gm) gmIds.add(tnorm(dom.sync_gm));
+      const slaves = [], masters = [];
+      for (const p of gptp.ports || []) {
+        if (p.domain !== domNum) continue;
+        if (p.role === 'SLAVE') slaves.push(tnorm(p.src_mac));
+        else if (p.role === 'MASTER') masters.push(tnorm(p.src_mac));
+      }
+      let source = null;
+      if (gmIds.size) {
+        for (const n of model.devices.values()) {
+          for (const clk of n.clockIds) { if (gmIds.has(clk)) { source = tnorm(n.mac); break; } }
+          if (source) break;
+        }
+      }
+      if (!source && masters.length === 1) source = masters[0];
+      if (!source) continue;
+      const label = 'gPTP domain ' + domNum;
+      let head = source;
+      for (const br of model.bridgesByDomain.get(domNum) || []) { add('sync', head, br, label); head = tnorm(br); }
+      for (const s of slaves) if (s !== head) add('sync', head, s, label);
+    }
+    /* streams: only draw a link where a stream is actually flowing — an
+       ESTABLISHED reservation to a READY listener, or a CONNECTED ACMP pair.
+       FAILED/PENDING/DISCONNECTED entries must not read as live links. */
+    for (const c of st.connections || []) {
+      if (c.state !== 'CONNECTED') continue;
+      if (isZeroId(c.talker_entity) || isZeroId(c.listener_entity)) continue;
+      add('stream', model.entityToMac.get(tnorm(c.talker_entity)),
+        model.entityToMac.get(tnorm(c.listener_entity)), shortStream(c.stream_id));
+    }
+    for (const r of st.reservations || []) {
+      if (r.state !== 'ESTABLISHED') continue;
+      for (const l of r.listeners || []) {
+        if (l.state !== 'READY' && l.state !== 'READY_FAILED') continue;
+        add('stream', r.talker_mac, l.mac, shortStream(r.stream_id));
+      }
+    }
+    return edges;
+  }
+
+  function topoRoleBadges(n) {
+    return h('div', { class: 'topo-badges' },
+      TOPO_ROLE_ORDER.filter((r) => n.roles.has(r)).map((r) =>
+        h('span', { class: 'sbadge ' + (TOPO_ROLE_CLS[r] || 'st-neutral') }, r)));
+  }
+
+  function selectTopoNode(mac) { topoSelMac = mac; topoSelPort = null; if (!updateTopoSelection()) renderTopologyTab(); }
+  function selectTopoPort(mac, port) { topoSelMac = mac; topoSelPort = port; if (!updateTopoSelection()) renderTopologyTab(); }
+
+  /* Selection-only update: the graph layout never depends on selection, so a
+     click just re-highlights the nodes/ports and swaps the machines panel —
+     no full rebuild or edge re-measure (which flickered on every click).
+     Returns false if the cached render is stale so the caller does a full one. */
+  function updateTopoSelection() {
+    if (!topoModel || !topoNodeEls || !topoPanelHost || !topoModel.devices.has(topoSelMac)) return false;
+    const selNode = topoModel.devices.get(topoSelMac);
+    if (topoSelPort && !(selNode.ports || []).some((p) => p.port === topoSelPort)) topoSelPort = null;
+    for (const [mac, el] of topoNodeEls) {
+      el.classList.toggle('is-selected', mac === topoSelMac);
+      el.querySelectorAll('.topo-port').forEach((chip) =>
+        chip.classList.toggle('is-selected', mac === topoSelMac && chip.dataset.port === topoSelPort));
+    }
+    topoPanelHost.replaceChildren(topoMachinesPanel(selNode));
+    return true;
+  }
+
+  function topoNodeEl(n) {
+    const selected = n.mac === topoSelMac;
+    const portChips = (n.ports || []).map((p) => {
+      const pn = p.port_number != null ? p.port_number : (String(p.port || '').split(':')[1] || '?');
+      const chip = h('button', {
+        class: 'topo-port' + (selected && topoSelPort === p.port ? ' is-selected' : ''),
+        type: 'button', dataset: { port: p.port || '' },
+        title: 'gPTP port ' + (p.port || '') + ' · ' + (p.role || 'UNKNOWN') + ' · ' + (p.as_capable || ''),
+      }, 'port ' + pn + ' ', h('span', { class: 'tp-role' }, (p.role || '').slice(0, 3) || '—'));
+      chip.addEventListener('click', (ev) => { ev.stopPropagation(); selectTopoPort(n.mac, p.port); });
+      return chip;
+    });
+    const el = h('div', {
+      class: 'topo-node' + (selected ? ' is-selected' : ''),
+      dataset: { mac: n.mac }, role: 'button', tabindex: '0',
+      title: n.label + ' — ' + (n.synthetic ? 'inferred bridge' : n.mac),
+    },
+      h('div', { class: 'topo-node-name' }, n.label),
+      h('div', { class: 'topo-node-mac mono' }, n.synthetic ? 'inferred' : n.mac),
+      topoRoleBadges(n),
+      (n.protocols || []).length
+        ? h('div', { class: 'topo-protos' }, n.protocols.map((p) => h('span', { class: 'badge ' + protoClass(p) }, p)))
+        : null,
+      portChips.length ? h('div', { class: 'topo-ports' }, portChips) : null,
+    );
+    el.addEventListener('click', () => selectTopoNode(n.mac));
+    el.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); selectTopoNode(n.mac); }
+    });
+    return el;
+  }
+
+  /* one gPTP port's MD Pdelay machine (reuses drawMachine) + responder/sync
+     states as badges + the port's transition history */
+  function topoPortCard(p, idx) {
+    const md = p.md || {};
+    const def = Object.assign({}, GPTP_MD_PDELAY_REQ_MACHINE, {
+      svgId: idx === 0 ? 'topo-machine-gptp-md' : 'topo-machine-gptp-md-' + idx,
+      title: 'gPTP port ' + (p.port || '') + ' — MD Pdelay',
+      subtitle: '802.1AS-2020 Clause ' + (md.clause || '11') + ' — MDPdelayReq (initiator)',
+    });
+    /* p.history holds role/asCapable transitions — a different state space from
+       MDPdelayReq — so it must NOT drive this machine's overlay. Only the live
+       pdelay_req_state is authoritative; show it, and no phantom visited path.
+       (The role/asCapable history is shown below, correctly labelled.) */
+    const live = {
+      current: md.pdelay_req_state || null,
+      history: [],
+      visited: new Set(md.pdelay_req_state ? [md.pdelay_req_state] : []),
+    };
+    const scroll = h('div', { class: 'sm-scroll' });
+    drawMachine(scroll, def, live);
+    const kv = (k, badge) => h('span', { class: 'kv' }, h('span', { class: 'kv-k' }, k + ' '), badge);
+    return h('div', { class: 'machine-card' + (topoSelPort === p.port ? ' is-focus' : '') },
+      h('div', { class: 'machine-head' },
+        h('span', { class: 'machine-title' }, def.title),
+        h('span', { class: 'machine-sub dim small' }, def.subtitle)),
+      h('div', { class: 'topo-badges' },
+        stateBadge(p.role || 'UNKNOWN'),
+        stateBadge(p.as_capable || 'UNKNOWN', true),
+        (md.pdelay_resp_state && md.pdelay_resp_state !== 'NOT_ENABLED') ? kv('MDPdelayResp', stateBadge(md.pdelay_resp_state, true)) : null,
+        (md.sync_send_state && md.sync_send_state !== 'NOT_ENABLED') ? kv('MDSyncSend', stateBadge(md.sync_send_state, true)) : null),
+      scroll,
+      (Array.isArray(p.history) && p.history.length)
+        ? h('div', { class: 'dim small mt4' }, 'port role / asCapable transitions') : null,
+      historyBlock(p.history),
+      h('div', { class: 'machine-note' }, def.note),
+    );
+  }
+
+  /* every reconstructed machine for one device, bound to its live data */
+  function topoMachinesPanel(n) {
+    const cards = [];
+    if (n.entity) {
+      const def = Object.assign({}, ADP_ENTITY_MACHINE, { svgId: 'topo-machine-entity' });
+      cards.push(machineCard(def, entityLive(n.entity), null));
+    }
+    let ports = n.ports || [];
+    if (topoSelPort) ports = ports.filter((p) => p.port === topoSelPort);   /* focus one */
+    ports.forEach((p, i) => cards.push(topoPortCard(p, topoSelPort ? 0 : i)));
+    (n.milanSinks || []).forEach((s, i) => {
+      const def = Object.assign({}, ACMP_MACHINE, { svgId: i === 0 ? 'topo-machine-acmp' : 'topo-machine-acmp-' + i });
+      cards.push(machineCard(def, sinkLive(s), null));
+    });
+    (n.mrp || []).forEach((m, i) => {
+      const def = Object.assign({}, MRP_REGISTRAR_MACHINE, {
+        svgId: i === 0 ? 'topo-machine-mrp-registrar' : 'topo-machine-mrp-registrar-' + i,
+        accent: PROTO_COLORS[m.proto] || PROTO_COLORS.MSRP,
+      });
+      const log = m.log || [];
+      const card = machineCard(def, mrpLiveAt(m, log.length ? log.length - 1 : -1), null);
+      const head = card.querySelector('.machine-head');
+      if (head) head.appendChild(h('span', { class: 'machine-sub dim small' },
+        mrpAttrLabel(m) + ' — registrar ', mrpStateBadge(m.registrar, true)));
+      cards.push(card);
+    });
+    const head = h('div', { class: 'topo-panel-head' },
+      h('span', { class: 'machine-title' }, n.label),
+      h('span', { class: 'mono dim small' }, n.synthetic ? 'inferred bridge' : n.mac),
+      topoRoleBadges(n),
+      topoSelPort ? h('span', { class: 'sbadge st-neutral sm' }, 'port ' + topoSelPort) : null);
+    return h('div', { class: 'topo-panel' }, head, machineLegend(),
+      cards.length ? cards : h('div', { class: 'empty small' },
+        'No reconstructed state machines for this device'
+        + (n.packets ? ' (' + fmtInt(n.packets) + ' packets observed).' : '.')));
+  }
+
+  function topoMarker(idv, fill) {
+    return svg('marker', {
+      id: idv, viewBox: '0 0 10 10', refX: 8.5, refY: 5,
+      markerWidth: 8, markerHeight: 8, orient: 'auto', markerUnits: 'userSpaceOnUse',
+    }, svg('path', { d: 'M0,0 L10,5 L0,10 z', fill }));
+  }
+
+  /* border-intersection point of a box toward (tx,ty) — where the arrow meets */
+  function topoBorderPt(box, tx, ty) {
+    const dx = tx - box.cx, dy = ty - box.cy;
+    if (dx === 0 && dy === 0) return { x: box.cx, y: box.cy };
+    const sx = dx !== 0 ? (box.w / 2) / Math.abs(dx) : Infinity;
+    const sy = dy !== 0 ? (box.h / 2) / Math.abs(dy) : Infinity;
+    const s = Math.min(sx, sy);
+    return { x: box.cx + dx * s, y: box.cy + dy * s };
+  }
+
+  /* measure the laid-out cards, size the graph, then draw the edge SVG behind
+     them (pointer-events:none so the cards stay clickable) */
+  function drawTopoEdges(graph, nodeEls, edges) {
+    const boxes = new Map();
+    let maxR = 0, maxB = 0;
+    for (const [mac, el] of nodeEls) {
+      const b = { x: el.offsetLeft, y: el.offsetTop, w: el.offsetWidth, h: el.offsetHeight };
+      b.cx = b.x + b.w / 2; b.cy = b.y + b.h / 2;
+      boxes.set(mac, b);
+      maxR = Math.max(maxR, b.x + b.w); maxB = Math.max(maxB, b.y + b.h);
+    }
+    const W = Math.ceil(maxR + TOPO_PAD), H = Math.ceil(maxB + TOPO_PAD);
+    graph.style.width = W + 'px';
+    graph.style.height = H + 'px';
+    const svgEl = svg('svg', { class: 'topo-svg', width: W, height: H, viewBox: '0 0 ' + W + ' ' + H });
+    svgEl.appendChild(svg('defs', null,
+      topoMarker('topo-arr-sync', PROTO_COLORS.GPTP),
+      topoMarker('topo-arr-stream', PROTO_COLORS.ACMP)));
+    for (const e of edges) {
+      const A = boxes.get(e.from), B = boxes.get(e.to);
+      if (!A || !B) continue;
+      const a = topoBorderPt(A, B.cx, B.cy);
+      const b = topoBorderPt(B, A.cx, A.cy);
+      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      const dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy) || 1;
+      const off = e.kind === 'stream' ? 18 : 0;   /* bow streams off any sync line */
+      const cx = mx - dy / len * off, cy = my + dx / len * off;
+      const isSync = e.kind === 'sync';
+      svgEl.appendChild(svg('path', {
+        class: 'topo-edge ' + (isSync ? 'is-sync' : 'is-stream'),
+        d: 'M ' + a.x + ' ' + a.y + ' Q ' + cx + ' ' + cy + ' ' + b.x + ' ' + b.y,
+        'marker-end': 'url(#' + (isSync ? 'topo-arr-sync' : 'topo-arr-stream') + ')',
+      }));
+      if (e.label) {
+        const lx = off ? cx : mx, ly = off ? cy : my;
+        const txt = String(e.label);
+        const w = txt.length * 5.6 + 8;
+        svgEl.appendChild(svg('rect', {
+          class: 'topo-elabel-bg', x: lx - w / 2, y: ly - 7, width: w, height: 14, rx: 3,
+        }));
+        svgEl.appendChild(svg('text', {
+          class: 'topo-elabel ' + (isSync ? 'is-sync' : 'is-stream'),
+          x: lx, y: ly, 'text-anchor': 'middle', 'dominant-baseline': 'middle',
+        }, txt));
+      }
+    }
+    graph.insertBefore(svgEl, graph.firstChild);
+  }
+
+  function topoLegend() {
+    return h('div', { class: 'topo-legend' },
+      h('span', { class: 'tl-item' }, h('span', { class: 'tl-line tl-sync' }), 'gPTP sync (master → slave)'),
+      h('span', { class: 'tl-item' }, h('span', { class: 'tl-line tl-stream' }), 'stream (talker → listener)'));
+  }
+
+  function renderTopologyTab() {
+    if (!S.stateData || !S.infoData) {
+      inspBody.replaceChildren(placeholder(
+        (S.stateData || S.infoData || S.stateLoading || S.infoLoading)
+          ? 'Loading topology…' : 'Topology not loaded yet.'));
+      if (!S.stateData && !S.stateLoading) loadState();
+      if (!S.infoData && !S.infoLoading) loadInfo();
+      return;
+    }
+    const model = buildTopologyModel();
+    topoModel = model;
+    const nodes = [...model.devices.values()];
+    const refreshBtn = h('button', { class: 'btn btn-sm', type: 'button' }, 'Refresh');
+    refreshBtn.addEventListener('click', () => { S.stateData = null; S.infoData = null; renderTopologyTab(); });
+
+    if (!nodes.length) {
+      inspBody.replaceChildren(h('div', { class: 'insp-scroll' },
+        h('div', { class: 'state-actions' },
+          h('span', { class: 'dim small' }, 'Observed network topology'),
+          h('span', { class: 'toolbar-spacer' }), refreshBtn),
+        h('div', { class: 'empty' }, 'No devices observed yet.')));
+      return;
+    }
+
+    if (!topoSelMac || !model.devices.has(topoSelMac)) {
+      const gm = nodes.find((n) => n.roles.has('GM')) || nodes[0];
+      topoSelMac = gm.mac; topoSelPort = null;
+    }
+    const selNode = model.devices.get(topoSelMac);
+    if (topoSelPort && !(selNode.ports || []).some((p) => p.port === topoSelPort)) topoSelPort = null;
+
+    /* layered layout: GM/master top, bridges, slaves, then non-gPTP others.
+       Unused tiers collapse so rows stay adjacent. */
+    const tierOf = (n) => (n.roles.has('GM') || n.roles.has('MASTER')) ? 0
+      : n.roles.has('Bridge') ? 1 : n.roles.has('SLAVE') ? 2 : 3;
+    const byTier = new Map();
+    for (const n of nodes) {
+      const t = tierOf(n);
+      if (!byTier.has(t)) byTier.set(t, []);
+      byTier.get(t).push(n);
+    }
+    const rows = [...byTier.keys()].sort((a, b) => a - b).map((t) => byTier.get(t));
+    rows.forEach((row, r) => row.forEach((n, c) => {
+      n._x = TOPO_PAD + c * TOPO_DX;
+      n._y = TOPO_PAD + r * TOPO_DY;
+    }));
+
+    const graph = h('div', { class: 'topo-graph' });
+    const nodeEls = new Map();
+    for (const n of nodes) {
+      const el = topoNodeEl(n);
+      el.style.left = n._x + 'px';
+      el.style.top = n._y + 'px';
+      el.style.width = TOPO_CARD_W + 'px';
+      graph.appendChild(el);
+      nodeEls.set(n.mac, el);
+    }
+    topoNodeEls = nodeEls;
+    const panelHost = h('div', { class: 'topo-panel-host' }, topoMachinesPanel(selNode));
+    topoPanelHost = panelHost;
+
+    inspBody.replaceChildren(h('div', { class: 'insp-scroll' },
+      h('div', { class: 'state-actions' },
+        h('span', { class: 'dim small' },
+          'Observed network topology — click a device card or a port chip for its state machines'),
+        h('span', { class: 'toolbar-spacer' }), refreshBtn),
+      topoLegend(),
+      h('div', { class: 'sm-scroll topo-scroll' }, graph),
+      panelHost,
+    ));
+
+    /* cards are in the live DOM now — measure them, then draw the edges */
+    drawTopoEdges(graph, nodeEls, buildTopoEdges(model));
   }
 
   /* ────────── inspector: notes tab ────────── */

@@ -200,6 +200,33 @@ def run_tests(page, url):
         expect(page.locator("#machine-mrp-registrar .sm-node.is-active")
                ).to_have_count(1)
 
+    # ---- Topology tab: device graph + per-device state machines ------------
+    page.locator("#tab-topology").click()
+    page.wait_for_timeout(400)
+    nodes = page.locator(".topo-node")
+    assert nodes.count() >= 2, f"expected >=2 topology device nodes, got {nodes.count()}"
+    expect(page.locator(".topo-node.is-selected")).to_have_count(1)
+    expect(page.locator(".topo-panel")).to_be_visible()
+    # A device is auto-selected and shows at least one state machine.
+    machines_shown = (page.locator("#topo-machine-entity").count()
+                      + page.locator("#topo-machine-gptp-md").count()
+                      + page.locator("#topo-machine-acmp").count()
+                      + page.locator("#topo-machine-mrp-registrar").count())
+    assert machines_shown >= 1, "selected device shows no state machines"
+    # Clicking a different device switches the panel to its machines.
+    first_sel = page.locator(".topo-node.is-selected").get_attribute("data-mac")
+    other = None
+    for i in range(nodes.count()):
+        m = nodes.nth(i).get_attribute("data-mac")
+        if m != first_sel:
+            other = m
+            break
+    if other:
+        page.locator(f'.topo-node[data-mac="{other}"]').click()
+        page.wait_for_timeout(250)
+        expect(page.locator(f'.topo-node[data-mac="{other}"].is-selected')
+               ).to_have_count(1)
+
     # ---- investigation notes (FE-9/BE-9) -----------------------------------
     page.locator("#tab-notes").click()
     notes = page.locator("#notes-editor")

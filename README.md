@@ -9,6 +9,12 @@ protocols (e.g. each entity's announced grandmaster is checked against the
 grandmaster actually observed on the wire), and presents events, per-packet
 detail, timelines and live state in a web UI.
 
+The UI renders the reconstructed protocol **state machines as live spec
+diagrams** (Milan ACMP listener sink, ADP, 802.1AS media-dependent, and the
+802.1Q MRP Applicant/Registrar) with an interactive event step-through, and a
+**Topology** view of the observed devices — click an endstation or a port to
+see all of its state machines in one place.
+
 The tool is an *observer* — it decodes and correlates traffic; generating
 traffic is [TSN-GEN]'s job. See [REQUIREMENTS.md](REQUIREMENTS.md) for the
 full requirements and [docs/API.md](docs/API.md) for the API contract.
