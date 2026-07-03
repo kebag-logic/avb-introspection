@@ -68,6 +68,15 @@ public:
      *  GptpLogic cites the count when sync is lost. */
     std::set<uint64_t> establishedStreams;
 
+    /** Entities currently AVAILABLE per ADP (kept by AdpLogic) — drives the
+     *  Milan sink EVT_TK_DISCOVERED/EVT_TK_DEPARTED events in AcmpLogic. */
+    std::set<uint64_t> adpAvailable;
+
+    /** Active MSRP talker declaration per StreamID (kept by MsrpLogic):
+     *  0 none, 1 Advertise, 2 Failed — drives the Milan sink
+     *  EVT_TK_REGISTERED/EVT_TK_UNREGISTERED events. */
+    std::map<uint64_t, int> msrpTalkerDecl;
+
     std::string nameOf(uint64_t entityId) const {
         auto it = entityNames.find(entityId);
         return it == entityNames.end() ? std::string() : it->second;

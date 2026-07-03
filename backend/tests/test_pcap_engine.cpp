@@ -348,6 +348,22 @@ TEST(golden_gptp_adp_stale_gm) {
     CHECK(st.find("\"gptp_sync\":\"HEALTHY\"") != std::string::npos);
 }
 
+TEST(golden_milan_binding) {
+    auto s = runSession("testdata/milan_binding.pcap");
+    CHECK_EQ(s->decodeErrors.load(), (uint64_t)0);
+    // Full Milan §5.5.3 lifecycle as observed on the wire.
+    CHECK(countTransitions(*s, "-> PRB_W_DELAY") == 2); // bind + rediscovery
+    CHECK(countTransitions(*s, "-> PRB_W_RESP ") >= 2);
+    CHECK(countTransitions(*s, "-> SETTLED_NO_RSV") == 2);
+    CHECK(countTransitions(*s, "-> SETTLED_RSV_OK") == 2);
+    CHECK(countTransitions(*s, "-> PRB_W_AVAIL") == 1);  // talker departed
+    CHECK(countTransitions(*s, "-> UNBOUND") == 1);
+    std::string st = s->stateJson();
+    CHECK(st.find("\"probing_status\":\"PROBING_DISABLED\"") != std::string::npos);
+    CHECK(st.find("\"milan_talkers\"") != std::string::npos);
+    CHECK(st.find("\"probes_received\":2") != std::string::npos);
+}
+
 TEST(golden_malformed_never_crashes) {
     auto s = runSession("testdata/malformed.pcap");
     CHECK_EQ(s->status.load(), (int)Session::Done);

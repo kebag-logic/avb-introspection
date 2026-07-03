@@ -179,6 +179,17 @@ public:
             w.kv("last_turnaround_us", p.lastTurnaroundUs);
             w.kv("last_observed_gap_ms", p.lastObservedGapMs);
             w.endObj();
+            // 802.1AS-2020 Clause 11 media-dependent machines (full-duplex
+            // point-to-point — 802.3 copper and fiber links share Clause 11;
+            // 802.11/EPON media use Clauses 12/13 and are out of scope).
+            w.key("md").beginObj();
+            w.kv("clause", "11 (full-duplex point-to-point, 802.3 copper/fiber)");
+            w.kv("pdelay_req_state",
+                 p.mdReqState.empty() ? "NOT_ENABLED" : p.mdReqState);
+            w.kv("pdelay_resp_state",
+                 p.mdRespState.empty() ? "NOT_ENABLED" : p.mdRespState);
+            w.kv("resets", (uint64_t)p.mdResets);
+            w.endObj();
             histJson(w, p.hist);
             w.endObj();
         }
@@ -221,6 +232,15 @@ private:
         double reqIntervalS = kDefaultPdelayIntervalS;
         double lastSyncSentTs = -1;
         double lastTurnaroundUs = -1, lastObservedGapMs = -1;
+        // 802.1AS-2020 Clause 11 media-dependent state machines (full-duplex
+        // point-to-point links — 802.3 copper and fiber share this clause).
+        // Observer view: transient states (INITIAL_*, SEND_*) collapse into
+        // the wait state they lead to; routine cycling is exposed live in
+        // /state without emitting transition events, RESET entries are
+        // emitted as diagnostics.
+        std::string mdReqState;  // MDPdelayReq (Figure 11-9)
+        std::string mdRespState; // MDPdelayResp (Figure 11-10)
+        uint32_t mdResets = 0;
         std::vector<HistEntry> hist;
     };
     struct Exchange { // one outstanding pdelay exchange per requester port
@@ -504,6 +524,9 @@ private:
             pdelayLost(port, ts);
             mExchanges.erase(it);
         }
+        // MDPdelayReq: (INITIAL_)SEND_PDELAY_REQ is transient — the machine
+        // rests in WAITING_FOR_PDELAY_RESP until the response arrives.
+        port.mdReqState = "WAITING_FOR_PDELAY_RESP";
         Exchange e;
         e.seq = (uint16_t)v.at("sequence_id");
         e.reqTs = ts;
@@ -511,12 +534,20 @@ private:
     }
 
     void onPdelayResp(VarLayerContext& v, double ts) {
+        // MDPdelayResp on the sender of this response: it has answered and
+        // now owes the follow-up carrying the egress timestamp.
+        getPort(v.at("source_clock_id"), (uint16_t)v.at("source_port_number"))
+            .mdRespState = "SENT_PDELAY_RESP_WAITING_FOR_TIMESTAMP";
+
         uint64_t reqKey = portKey(v.at("requesting_clock_id"),
                                   (uint16_t)v.at("requesting_port_number"));
         auto it = mExchanges.find(reqKey);
         if (it == mExchanges.end() ||
             it->second.seq != (uint16_t)v.at("sequence_id"))
             return;
+        auto pIt = mPorts.find(reqKey);
+        if (pIt != mPorts.end())
+            pIt->second.mdReqState = "WAITING_FOR_PDELAY_RESP_FOLLOW_UP";
         it->second.respTs = ts;
         it->second.haveResp = true;
         it->second.responderKey = portKey(
@@ -526,12 +557,19 @@ private:
     }
 
     void onPdelayRespFu(VarLayerContext& v, double ts, uint32_t n) {
+        // MDPdelayResp cycle complete on the responder side.
+        getPort(v.at("source_clock_id"), (uint16_t)v.at("source_port_number"))
+            .mdRespState = "WAITING_FOR_PDELAY_REQ";
+
         uint64_t reqKey = portKey(v.at("requesting_clock_id"),
                                   (uint16_t)v.at("requesting_port_number"));
         auto it = mExchanges.find(reqKey);
         if (it == mExchanges.end() || !it->second.haveResp ||
             it->second.seq != (uint16_t)v.at("sequence_id"))
             return;
+        auto mdIt = mPorts.find(reqKey);
+        if (mdIt != mPorts.end())
+            mdIt->second.mdReqState = "WAITING_FOR_PDELAY_INTERVAL_TIMER";
 
         auto pIt = mPorts.find(reqKey);
         if (pIt == mPorts.end()) {
@@ -574,6 +612,14 @@ private:
     void pdelayLost(Port& p, double ts) {
         p.pdelayLost++;
         p.consecutiveLost++;
+        // MDPdelayReq enters RESET (Figure 11-9) when the interval expires
+        // without a matched Resp/Resp_Follow_Up; lostResponses accumulates.
+        p.mdReqState = "RESET";
+        p.mdResets++;
+        portWarning(p, ts, 0,
+                    "MDPdelayReq -> RESET (lostResponses " +
+                        std::to_string(p.consecutiveLost) + " of " +
+                        std::to_string(kAllowedLostResponses) + " allowed)");
         if (p.consecutiveLost >= (uint32_t)kAllowedLostResponses)
             portTransition(p, &Port::asCapable, ts, 0, "UNKNOWN",
                            "NOT_AS_CAPABLE",

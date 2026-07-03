@@ -55,6 +55,12 @@ public:
                 why = std::string("TalkerFailed ") + mrpEventName(ev) + " (" +
                       msrpFailureName(res.failCode) + ")";
             }
+            if (mShared) { // talker-attribute truth for the Milan sink SM
+                if (res.decl == DeclNone)
+                    mShared->msrpTalkerDecl.erase(res.streamId);
+                else
+                    mShared->msrpTalkerDecl[res.streamId] = res.decl;
+            }
             recompute(res, ts, n, why, ev == 5);
             break;
         }

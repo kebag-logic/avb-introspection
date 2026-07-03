@@ -111,16 +111,117 @@ TEST(acmp_connect_disconnect) {
                        {"stream_id", 0xabcd}, {"stream_dest_mac", 0x91e0f0000e80},
                        {"stream_vlan_id", 2}, {"connection_count", 1}});
     };
-    auto t1 = common(6, 0, 0.0, 1); // CONNECT_RX_COMMAND
-    CHECK_EQ(t1.size(), (size_t)1);
-    CHECK_EQ(t1[0].to, std::string("CONNECTING"));
+    auto has = [](const std::vector<Transition>& v, const char* to) {
+        for (auto& t : v)
+            if (t.to == to) return true;
+        return false;
+    };
+    // Each wire message now drives two machines: the generic 1722.1
+    // connection view and the Milan v1.2 sink state machine.
+    auto t1 = common(6, 0, 0.0, 1); // BIND_RX / CONNECT_RX_COMMAND
+    CHECK(has(t1, "CONNECTING"));
+    CHECK(has(t1, "PRB_W_AVAIL")); // talker not ADP-available in this rig
     auto t2 = common(7, 0, 0.1, 1); // CONNECT_RX_RESPONSE SUCCESS
-    CHECK_EQ(t2.size(), (size_t)1);
-    CHECK_EQ(t2[0].to, std::string("CONNECTED"));
-    auto t3 = common(8, 0, 5.0, 2); // DISCONNECT_RX_COMMAND
-    CHECK_EQ(t3[0].to, std::string("DISCONNECTING"));
+    CHECK(has(t2, "CONNECTED"));
+    auto t3 = common(8, 0, 5.0, 2); // UNBIND_RX / DISCONNECT_RX_COMMAND
+    CHECK(has(t3, "DISCONNECTING"));
+    CHECK(has(t3, "UNBOUND"));
     auto t4 = common(9, 0, 5.1, 2);
-    CHECK_EQ(t4[0].to, std::string("DISCONNECTED"));
+    CHECK(has(t4, "DISCONNECTED"));
+}
+
+TEST(acmp_milan_sink_state_machine) {
+    Rig r("atdecc_acmp");
+    auto feed = [&](uint64_t msg, uint64_t status, double ts,
+                    uint64_t stream = 0) {
+        return r.feed("atdecc_acmp", ts,
+                      {{"message_type", msg}, {"status", status},
+                       {"talker_entity_id", 100}, {"talker_unique_id", 0},
+                       {"listener_entity_id", 200}, {"listener_unique_id", 0},
+                       {"controller_entity_id", 99}, {"sequence_id", 1},
+                       {"stream_id", stream},
+                       {"stream_dest_mac", 0x91e0f0000e80},
+                       {"stream_vlan_id", 2}, {"connection_count", 0}});
+    };
+    auto has = [](const std::vector<Transition>& v, const char* to) {
+        for (auto& t : v)
+            if (t.to == to) return true;
+        return false;
+    };
+
+    // Talker already ADP-available -> BIND goes straight to PRB_W_DELAY.
+    r.shared.adpAvailable.insert(100);
+    auto t1 = feed(6, 0, 0.0); // BIND_RX_COMMAND
+    CHECK(has(t1, "PRB_W_DELAY"));
+
+    auto t2 = feed(0, 0, 0.3); // PROBE_TX_COMMAND (TMR_DELAY expired)
+    CHECK(has(t2, "PRB_W_RESP"));
+
+    // No response; second probe after ~200 ms -> PRB_W_RESP2.
+    auto t3 = feed(0, 0, 0.51);
+    CHECK(has(t3, "PRB_W_RESP2"));
+
+    // Still no response -> PRB_W_RETRY (via time tick).
+    auto t4 = r.tick(0.8);
+    CHECK(has(t4, "PRB_W_RETRY"));
+
+    // Retry after TMR_RETRY, then a SUCCESS probe response -> settled.
+    auto t5 = feed(0, 0, 4.9);
+    CHECK(has(t5, "PRB_W_RESP"));
+    auto t6 = feed(1, 0, 4.95, 0xbeef); // PROBE_TX_RESPONSE SUCCESS
+    CHECK(has(t6, "SETTLED_NO_RSV"));
+
+    // MSRP talker attribute appears -> SETTLED_RSV_OK.
+    r.shared.msrpTalkerDecl[0xbeef] = 1;
+    auto t7 = r.tick(5.2);
+    CHECK(has(t7, "SETTLED_RSV_OK"));
+
+    // Talker departs (ADP) -> back to passive probing from any state.
+    r.shared.adpAvailable.erase(100);
+    auto t8 = r.tick(6.0);
+    CHECK(has(t8, "PRB_W_AVAIL"));
+
+    // Talker returns -> PRB_W_DELAY (EVT_TK_DISCOVERED).
+    r.shared.adpAvailable.insert(100);
+    auto t9 = r.tick(6.5);
+    CHECK(has(t9, "PRB_W_DELAY"));
+
+    // Controller unbinds -> UNBOUND.
+    auto t10 = feed(8, 0, 7.0); // UNBIND_RX_COMMAND
+    CHECK(has(t10, "UNBOUND"));
+
+    std::string st = r.snap();
+    CHECK(st.find("\"probing_status\":\"PROBING_DISABLED\"") != std::string::npos);
+    CHECK(st.find("\"probes_sent\":3") != std::string::npos);
+    CHECK(st.find("\"milan_talkers\"") != std::string::npos);
+    CHECK(st.find("\"probes_received\":3") != std::string::npos);
+}
+
+TEST(acmp_milan_saved_binding_and_talker_warnings) {
+    Rig r("atdecc_acmp");
+    auto feed = [&](uint64_t msg, uint64_t status, double ts) {
+        return r.feed("atdecc_acmp", ts,
+                      {{"message_type", msg}, {"status", status},
+                       {"talker_entity_id", 100}, {"talker_unique_id", 0},
+                       {"listener_entity_id", 200}, {"listener_unique_id", 0},
+                       {"controller_entity_id", 99}, {"sequence_id", 1},
+                       {"stream_id", 0}, {"stream_dest_mac", 0},
+                       {"stream_vlan_id", 0}, {"connection_count", 0}});
+    };
+    // Probe without an observed BIND: Milan saved-binding startup.
+    auto t1 = feed(0, 0, 0.0);
+    bool saved = false;
+    for (auto& t : t1)
+        if (t.to == "PRB_W_RESP" &&
+            t.why.find("saved binding") != std::string::npos)
+            saved = true;
+    CHECK(saved);
+
+    // GET_TX_CONNECTION is not implemented in Milan -> warning.
+    auto t2 = feed(12, 0, 1.0);
+    CHECK(!t2.empty());
+    CHECK(t2.back().why.find("not") != std::string::npos);
+    CHECK(t2.back().object.find("milan talker") != std::string::npos);
 }
 
 TEST(acmp_failure_and_timeout) {
@@ -365,13 +466,24 @@ TEST(gptp_pdelay_ascapable) {
     };
 
     req(1, 0.0);
+    CHECK(r.snap().find("\"pdelay_req_state\":\"WAITING_FOR_PDELAY_RESP\"") !=
+          std::string::npos);
     resp(1, 0.001, 1000000);
+    CHECK(r.snap().find("\"pdelay_resp_state\":"
+                        "\"SENT_PDELAY_RESP_WAITING_FOR_TIMESTAMP\"") !=
+          std::string::npos);
     auto t1 = respFu(1, 0.002, 1800000); // 800 µs turnaround
     bool capable = false;
     for (auto& t : t1)
         if (t.to == "AS_CAPABLE") capable = true;
     CHECK(capable);
     CHECK(r.snap().find("\"last_turnaround_us\":800") != std::string::npos);
+    // MD machines rest: requester waits the interval, responder waits reqs.
+    CHECK(r.snap().find("\"pdelay_req_state\":"
+                        "\"WAITING_FOR_PDELAY_INTERVAL_TIMER\"") !=
+          std::string::npos);
+    CHECK(r.snap().find("\"pdelay_resp_state\":\"WAITING_FOR_PDELAY_REQ\"") !=
+          std::string::npos);
 
     // Slow responder: > 10 ms turnaround -> warning on the responder port.
     req(2, 1.0);
@@ -381,15 +493,23 @@ TEST(gptp_pdelay_ascapable) {
     CHECK(t2.back().why.find("12.3 ms") != std::string::npos);
     CHECK(t2.back().object.find("0x0000000000000033") != std::string::npos);
 
-    // 3 consecutive unanswered requests -> NOT_AS_CAPABLE.
+    // 3 consecutive unanswered requests -> NOT_AS_CAPABLE, with the
+    // MDPdelayReq machine passing through RESET each time (802.1AS 11.2.19).
     req(3, 2.0);
-    req(4, 3.5);  // closes 3 as lost (1)
+    auto lost1 = req(4, 3.5); // closes 3 as lost (1)
+    bool sawReset = false;
+    for (auto& t : lost1)
+        if (t.why.find("MDPdelayReq -> RESET") != std::string::npos)
+            sawReset = true;
+    CHECK(sawReset);
     req(5, 5.0);  // closes 4 as lost (2)
     auto t3 = r.tick(7.0); // expires 5 (3)
     bool notCapable = false;
     for (auto& t : t3)
         if (t.to == "NOT_AS_CAPABLE") notCapable = true;
     CHECK(notCapable);
+    CHECK(r.snap().find("\"pdelay_req_state\":\"RESET\"") != std::string::npos);
+    CHECK(r.snap().find("\"resets\":3") != std::string::npos);
 }
 
 TEST(gptp_roles) {

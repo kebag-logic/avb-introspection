@@ -135,6 +135,12 @@ private:
                     const std::string& why) {
         std::string from = e.state.empty() ? "UNKNOWN" : e.state;
         e.state = to;
+        if (mShared) { // availability truth for the Milan sink state machine
+            if (to == "AVAILABLE")
+                mShared->adpAvailable.insert(e.entityId);
+            else
+                mShared->adpAvailable.erase(e.entityId);
+        }
         e.hist.push_back({ts, n, from, to, why});
         Transition t;
         t.proto = Proto::ADP;

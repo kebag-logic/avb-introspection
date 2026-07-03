@@ -589,6 +589,47 @@ def scenario_gptp_adp_stale_gm():
     write_pcap("testdata/gptp_adp_stale_gm.pcap", pk)
 
 
+def scenario_milan_binding():
+    """Milan v1.2 §5.5.3 listener sink lifecycle: bind -> probe -> settle ->
+    talker departs/returns -> re-settle -> unbind."""
+    lm, tm, cm = LISTENER_MAC, TALKER_MAC, CTRL_MAC
+    pk = []
+    # Talker announces itself first (sink will go straight to PRB_W_DELAY).
+    pk.append((0.10, eth(ADP_MC, tm, ETYPE_AVTP, adp(0, 62, E_TALKER, avail_idx=1))))
+    # Controller Bind (Milan name for CONNECT_RX).
+    pk.append((0.50, eth(lm, cm, ETYPE_AVTP,
+                         acmp(6, 0, 0, E_CTRL, E_TALKER, E_LISTENER, seq=1))))
+    pk.append((0.51, eth(cm, lm, ETYPE_AVTP,
+                         acmp(7, 0, 0, E_CTRL, E_TALKER, E_LISTENER, seq=1))))
+    # Auto Connect: probe (Milan name for CONNECT_TX), talker answers.
+    pk.append((0.80, eth(tm, lm, ETYPE_AVTP,
+                         acmp(0, 0, 0, E_CTRL, E_TALKER, E_LISTENER, seq=2))))
+    pk.append((0.85, eth(lm, tm, ETYPE_AVTP,
+                         acmp(1, 0, STREAM_ID, E_CTRL, E_TALKER, E_LISTENER,
+                              dest=STREAM_DEST, seq=2, vlan=VLAN))))
+    # SRP talker attribute appears -> SETTLED_RSV_OK; listener follows.
+    pk.append((1.00, msrp_talker([JOININ])))
+    pk.append((1.05, eth(MSRP_MC, lm, ETYPE_MSRP,
+                         msrp_pdu([(3, 8, [mrp_vector(listener_fv(STREAM_ID),
+                                                      [JOININ],
+                                                      listener_events=[READY])])]))))
+    # Talker departs (EVT_TK_DEPARTED) and later returns.
+    pk.append((2.00, eth(ADP_MC, tm, ETYPE_AVTP, adp(1, 62, E_TALKER, avail_idx=2))))
+    pk.append((3.00, eth(ADP_MC, tm, ETYPE_AVTP, adp(0, 62, E_TALKER, avail_idx=3))))
+    # Re-probe and settle again (talker attribute still registered).
+    pk.append((3.30, eth(tm, lm, ETYPE_AVTP,
+                         acmp(0, 0, 0, E_CTRL, E_TALKER, E_LISTENER, seq=3))))
+    pk.append((3.35, eth(lm, tm, ETYPE_AVTP,
+                         acmp(1, 0, STREAM_ID, E_CTRL, E_TALKER, E_LISTENER,
+                              dest=STREAM_DEST, seq=3, vlan=VLAN))))
+    # Controller Unbind.
+    pk.append((4.00, eth(lm, cm, ETYPE_AVTP,
+                         acmp(8, 0, STREAM_ID, E_CTRL, E_TALKER, E_LISTENER, seq=4))))
+    pk.append((4.01, eth(cm, lm, ETYPE_AVTP,
+                         acmp(9, 0, STREAM_ID, E_CTRL, E_TALKER, E_LISTENER, seq=4))))
+    write_pcap("testdata/milan_binding.pcap", pk)
+
+
 def scenario_malformed():
     pk = []
     # ADP truncated mid-PDU
@@ -707,6 +748,7 @@ def main():
     scenario_gptp_sync_loss()
     scenario_gptp_pdelay()
     scenario_gptp_adp_stale_gm()
+    scenario_milan_binding()
     scenario_malformed()
     scenario_milan()
     return 0
