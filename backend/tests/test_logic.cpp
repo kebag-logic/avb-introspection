@@ -388,10 +388,15 @@ TEST(gptp_gm_lifecycle) {
     CHECK(!t2.empty() && t2.back().why.find("BMCA") != std::string::npos);
     CHECK_EQ(r.shared.gptpDomains[0].gmIdentity, (uint64_t)0xBBBB);
 
-    // Announce silence -> GM_TIMED_OUT (derived).
+    // Announce silence -> GM_TIMED_OUT (plus per-port announce AGED, 10.2.12).
     auto t3 = r.tick(5.0);
-    CHECK_EQ(t3.size(), (size_t)1);
-    CHECK_EQ(t3[0].to, std::string("GM_TIMED_OUT"));
+    bool timedOut = false, aged = false;
+    for (auto& t : t3) {
+        if (t.to == "GM_TIMED_OUT") timedOut = true;
+        if (t.to == "AGED") aged = true;
+    }
+    CHECK(timedOut);
+    CHECK(aged);
     CHECK(r.snap().find("\"state\":\"GM_TIMED_OUT\"") != std::string::npos);
     // Last-known GM stays published for the ADP comparison.
     CHECK(r.shared.gptpDomains[0].gmKnown);
@@ -533,6 +538,176 @@ TEST(gptp_roles) {
     }
     CHECK(master);
     CHECK(slave);
+}
+
+TEST(gptp_bmca_readout) {
+    Rig r("8021as_gptp");
+    auto announce = [&](uint64_t clock, uint64_t gm, uint64_t p1, double ts) {
+        auto vars = gptpCommon(0xB, clock, 1, 0, 0);
+        vars.insert(vars.end(),
+                    {{"gm_identity", gm}, {"gm_priority1", p1},
+                     {"gm_priority2", 248}, {"gm_clock_class", 248},
+                     {"gm_clock_accuracy", 0x21}, {"gm_clock_variance", 100},
+                     {"steps_removed", 0}, {"time_source", 0xA0},
+                     {"current_utc_offset", 0}});
+        return r.feed("8021as_gptp", ts, vars);
+    };
+    auto sync = [&](uint64_t clock, uint64_t seq, double ts) {
+        auto vars = gptpCommon(0x0, clock, seq);
+        vars.push_back({"two_step", 1});
+        return r.feed("8021as_gptp", ts, vars);
+    };
+
+    // A (prio1 248) announces and drives Sync — converged on A.
+    announce(0xA1, 0xA1, 248, 0.0);
+    sync(0xA1, 1, 0.1);
+    CHECK(r.snap().find("\"bmca\":\"CONVERGED\"") != std::string::npos);
+
+    // B announces a better vector (prio1 200) but Sync still comes from A:
+    // a priority inversion — reported as /state only, never as an event.
+    announce(0xB2, 0xB2, 200, 0.5);
+    sync(0xA1, 2, 0.6);
+    CHECK(r.snap().find("\"bmca\":\"PRIORITY_INVERSION\"") != std::string::npos);
+    CHECK(r.snap().find("\"expected_gm\":\"0x00000000000000b2\"") !=
+          std::string::npos);
+
+    // Two equal-priority (prio1 248) clocks: the winner is a clockIdentity
+    // tiebreak, not a fault. C1 (lower id) is "expected", C9 drives Sync.
+    Rig r2("8021as_gptp");
+    auto ann2 = [&](uint64_t clock) {
+        auto v = gptpCommon(0xB, clock, 1);
+        v.insert(v.end(), {{"gm_identity", clock}, {"gm_priority1", 248},
+                           {"gm_priority2", 248}, {"gm_clock_class", 248},
+                           {"gm_clock_accuracy", 0x21}, {"gm_clock_variance", 100},
+                           {"steps_removed", 0}, {"time_source", 0xA0},
+                           {"current_utc_offset", 0}});
+        return v;
+    };
+    r2.feed("8021as_gptp", 0.0, ann2(0xC1));
+    r2.feed("8021as_gptp", 0.05, ann2(0xC9));
+    auto s = gptpCommon(0x0, 0xC9, 1);
+    s.push_back({"two_step", 1});
+    r2.feed("8021as_gptp", 0.1, s); // C9 syncs; C1 (lower id) is "expected"
+    CHECK(r2.snap().find("\"bmca\":\"TIEBREAK\"") != std::string::npos);
+
+    // No BMCA text events are ever emitted (only GM_CHANGED narrates).
+    auto all = r.snap();
+    CHECK(all.find("election not converged") == std::string::npos);
+}
+
+TEST(gptp_bmca_no_stale_sync_gm) {
+    // Regression: when Sync moves to a port whose Announce hasn't been seen,
+    // the driving GM must read UNKNOWN, never the previous sender's GM.
+    Rig r("8021as_gptp");
+    auto announce = [&](uint64_t clock, uint64_t p1, double ts) {
+        auto v = gptpCommon(0xB, clock, 1, 0, 0);
+        v.insert(v.end(), {{"gm_identity", clock}, {"gm_priority1", p1},
+                           {"gm_priority2", 248}, {"gm_clock_class", 248},
+                           {"gm_clock_accuracy", 0x21}, {"gm_clock_variance", 100},
+                           {"steps_removed", 0}, {"time_source", 0xA0},
+                           {"current_utc_offset", 0}});
+        return r.feed("8021as_gptp", ts, v);
+    };
+    auto sync = [&](uint64_t clock, uint64_t seq, double ts) {
+        auto v = gptpCommon(0x0, clock, seq);
+        v.push_back({"two_step", 1});
+        return r.feed("8021as_gptp", ts, v);
+    };
+    announce(0xA1, 248, 0.0);
+    sync(0xA1, 1, 0.1);
+    CHECK(r.snap().find("\"bmca\":\"CONVERGED\"") != std::string::npos);
+    // Port B (never announced) takes over Sync — driving GM is now unknown.
+    sync(0xB2, 2, 0.5);
+    CHECK(r.snap().find("\"sync_gm\":\"\"") != std::string::npos);
+    CHECK(r.snap().find("\"bmca\":\"UNKNOWN\"") != std::string::npos);
+    CHECK(r.snap().find("\"bmca\":\"CONVERGED\"") == std::string::npos);
+}
+
+TEST(gptp_bmca_clock_class_inversion) {
+    // Regression: equal priority1 but different clockClass must read as a
+    // PRIORITY_INVERSION, not a benign TIEBREAK.
+    Rig r("8021as_gptp");
+    auto ann = [&](uint64_t clock, uint64_t clockClass, double ts) {
+        auto v = gptpCommon(0xB, clock, 1);
+        v.insert(v.end(), {{"gm_identity", clock}, {"gm_priority1", 248},
+                           {"gm_priority2", 248}, {"gm_clock_class", clockClass},
+                           {"gm_clock_accuracy", 0x21}, {"gm_clock_variance", 100},
+                           {"steps_removed", 0}, {"time_source", 0xA0},
+                           {"current_utc_offset", 0}});
+        return r.feed("8021as_gptp", ts, v);
+    };
+    ann(0xC6, 6, 0.0);    // GPS-quality clock (better clockClass)
+    ann(0xF8, 248, 0.05); // free-running crystal
+    auto s = gptpCommon(0x0, 0xF8, 1);
+    s.push_back({"two_step", 1});
+    r.feed("8021as_gptp", 0.1, s); // the worse clock drives Sync
+    CHECK(r.snap().find("\"bmca\":\"PRIORITY_INVERSION\"") != std::string::npos);
+}
+
+TEST(gptp_announce_aging_is_per_port) {
+    // Regression: a fast announcer must not age out a slower healthy one.
+    Rig r("8021as_gptp");
+    auto ann = [&](uint64_t clock, uint64_t logIval, double ts) {
+        auto v = gptpCommon(0xB, clock, 1, 0, logIval);
+        v.insert(v.end(), {{"gm_identity", clock}, {"gm_priority1", 248},
+                           {"gm_priority2", 248}, {"gm_clock_class", 248},
+                           {"gm_clock_accuracy", 0x21}, {"gm_clock_variance", 100},
+                           {"steps_removed", 0}, {"time_source", 0xA0},
+                           {"current_utc_offset", 0}});
+        return r.feed("8021as_gptp", ts, v);
+    };
+    // Fast port F: 0.125 s (logInterval -3); slow port S: 1 s (logInterval 0).
+    ann(0xFF, 0xFD, 0.0);
+    ann(0x55, 0x00, 0.0);
+    for (int i = 1; i <= 3; ++i) ann(0xFF, 0xFD, i * 0.125); // F keeps up
+    // S is on schedule (1 s cadence): a tick just before its next announce
+    // must NOT age it out.
+    auto t = r.tick(0.9);
+    for (auto& tr : t)
+        CHECK(!(tr.to == "AGED" &&
+                tr.object.find("0x0000000000000055") != std::string::npos));
+}
+
+TEST(gptp_capable_and_interval_request) {
+    Rig r("8021as_gptp");
+    auto capable = [&](double ts) {
+        auto vars = gptpCommon(0xC, 0x11, 1);
+        vars.insert(vars.end(), {{"signaling_gptp_capable", 1},
+                                 {"gptp_capable_interval", 0}});
+        return r.feed("8021as_gptp", ts, vars);
+    };
+    auto t1 = capable(0.0);
+    CHECK(!t1.empty());
+    CHECK_EQ(t1[0].to, std::string("GPTP_CAPABLE"));
+    capable(1.0);
+
+    // Interval request from the other port is exposed in /state.
+    auto vars = gptpCommon(0xC, 0x22, 2);
+    vars.insert(vars.end(), {{"signaling_interval_request", 1},
+                             {"req_link_delay_interval", 0},
+                             {"req_time_sync_interval", 0xFD /* -3 */},
+                             {"req_announce_interval", 0}});
+    r.feed("8021as_gptp", 1.5, vars);
+    CHECK(r.snap().find("\"requested_intervals\"") != std::string::npos);
+    CHECK(r.snap().find("\"time_sync\":\"-3 (125 ms)\"") != std::string::npos);
+
+    // Silence > 9 intervals -> CAPABLE_TIMED_OUT (10.7.3.3).
+    auto t2 = r.tick(11.0);
+    bool timedOut = false;
+    for (auto& tr : t2)
+        if (tr.to == "CAPABLE_TIMED_OUT") timedOut = true;
+    CHECK(timedOut);
+}
+
+TEST(gptp_md_sync_send_state) {
+    Rig r("8021as_gptp");
+    auto vars = gptpCommon(0x0, 0x11, 7);
+    vars.push_back({"two_step", 1});
+    r.feed("8021as_gptp", 0.0, vars);
+    CHECK(r.snap().find("\"sync_send_state\":\"FOLLOW_UP_PENDING\"") !=
+          std::string::npos);
+    r.feed("8021as_gptp", 0.01, gptpCommon(0x8, 0x11, 7));
+    CHECK(r.snap().find("\"sync_send_state\":\"IDLE\"") != std::string::npos);
 }
 
 TEST(adp_gm_mismatch_cross_check) {

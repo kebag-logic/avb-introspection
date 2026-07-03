@@ -777,15 +777,18 @@ function metricTiles(m) {
 function stateClass(sName) {
   const u = String(sName || '').toUpperCase();
   if (u.includes('FAIL') || u.includes('TIMED_OUT') || u === 'LOST'
-    || u === 'MISMATCH' || u === 'NOT_AS_CAPABLE' || u.includes('ERROR')) return 'st-bad';
+    || u === 'MISMATCH' || u === 'PRIORITY_INVERSION' || u === 'NOT_AS_CAPABLE'
+    || u.includes('ERROR')) return 'st-bad';
+  if (u === 'TIEBREAK') return 'st-warn';
   if (u === 'DEFENDING') return 'st-serious';
   if (u === 'AVAILABLE' || u === 'ESTABLISHED' || u === 'REGISTERED' || u === 'ACQUIRED'
     || u === 'CONNECTED' || u === 'READY' || u === 'SUCCESS' || u === 'ADVERTISE'
     || u === 'HEALTHY' || u === 'MATCH' || u === 'GM_PRESENT'
-    || u === 'AS_CAPABLE' || u === 'MASTER') return 'st-good';
+    || u === 'AS_CAPABLE' || u === 'MASTER' || u === 'CONVERGED'
+    || u === 'GPTP_CAPABLE' || u === 'RECEIVED') return 'st-good';
   if (u === 'PENDING' || u === 'PROBING' || u === 'CONNECTING' || u === 'LEAVING'
     || u === 'DEPARTING' || u === 'DISCONNECTING' || u === 'NO_GM'
-    || u.includes('ASKING')) return 'st-warn';
+    || u === 'AGED' || u.includes('ASKING')) return 'st-warn';
   return 'st-neutral';
 }
 
@@ -1005,6 +1008,11 @@ function sessionView(app, id) {
     gutter: 62, axisH: 22, laneH: 23,
     drag: null, hoverIdx: -1, raf: 0,
   };
+  {
+    /* restore the user's lane height (shift+right-drag on the timeline) */
+    const storedLaneH = parseFloat(localStorage.getItem(LANEH_KEY) || '');
+    if (storedLaneH >= 14 && storedLaneH <= 44) TL.laneH = storedLaneH;
+  }
   const LANE_OTHER = PROTOCOLS.length;
 
   function laneCount() { return TL.hasOther ? PROTOCOLS.length + 1 : PROTOCOLS.length; }
@@ -1086,7 +1094,7 @@ function sessionView(app, id) {
     tlCanvas,
     tlTooltip,
     h('div', { class: 'tl-controls' },
-      h('span', { class: 'tl-hint dim' }, 'wheel zoom · drag pan · dblclick fit'),
+      h('span', { class: 'tl-hint dim' }, 'wheel zoom · shift+wheel scroll · drag pan · dblclick fit'),
       tlFitBtn,
     ),
   );
@@ -1119,9 +1127,15 @@ function sessionView(app, id) {
   const tabInspBtn = h('button', { class: 'tab active', type: 'button', onclick: () => setTab('inspect') }, 'Packet inspector');
   const tabStateBtn = h('button', { class: 'tab', type: 'button', onclick: () => setTab('state') }, 'State');
   const tabNotesBtn = h('button', { id: 'tab-notes', class: 'tab', type: 'button', onclick: () => setTab('notes') }, 'Notes');
+  const tabMarkersBtn = h('button', { id: 'tab-markers', class: 'tab', type: 'button', onclick: () => setTab('markers') }, 'Markers');
   const tabInfoBtn = h('button', { id: 'tab-info', class: 'tab', type: 'button', onclick: () => setTab('info') }, 'Info');
   const inspBody = h('div', { class: 'insp-body' });
   const eventsPanel = h('div', { class: 'events-panel' }, tableHead, tableBody, tableEmpty);
+  const inspectorPanel = h('div', { class: 'inspector-panel' },
+    h('div', { class: 'tabs' }, tabInspBtn, tabStateBtn, tabNotesBtn, tabMarkersBtn, tabInfoBtn),
+    inspBody,
+  );
+  const mainSplit = h('div', { class: 'session-main' }, eventsPanel, inspectorPanel);
 
   /* ── assemble ── */
   app.appendChild(
@@ -1147,13 +1161,7 @@ function sessionView(app, id) {
         errBanner,
       ),
       tlWrap,
-      h('div', { class: 'session-main' },
-        eventsPanel,
-        h('div', { class: 'inspector-panel' },
-          h('div', { class: 'tabs' }, tabInspBtn, tabStateBtn, tabNotesBtn, tabInfoBtn),
-          inspBody,
-        ),
-      ),
+      mainSplit,
     ),
   );
 
@@ -1501,6 +1509,14 @@ function sessionView(app, id) {
       return;
     }
     if (ev.key === 'Escape') { clearSelection(); return; }
+    if ((ev.key === 'm' || ev.key === 'M') && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+      /* quick marker at the current selection */
+      if (S.selected >= 0 && S.events[S.selected]) {
+        ev.preventDefault();
+        addMarkerHere();
+      }
+      return;
+    }
     if (ev.key !== 'ArrowDown' && ev.key !== 'ArrowUp') return;
     const n = S.filtered.length;
     if (!n) return;
@@ -1522,6 +1538,7 @@ function sessionView(app, id) {
     tabInspBtn.classList.toggle('active', t === 'inspect');
     tabStateBtn.classList.toggle('active', t === 'state');
     tabNotesBtn.classList.toggle('active', t === 'notes');
+    tabMarkersBtn.classList.toggle('active', t === 'markers');
     tabInfoBtn.classList.toggle('active', t === 'info');
     setPresenceView(t === 'notes' ? 'session/' + id + ':notes' : 'session/' + id);
     renderInspector();
@@ -1546,6 +1563,7 @@ function sessionView(app, id) {
   function renderInspector() {
     if (S.tab === 'state') { renderStateTab(); return; }
     if (S.tab === 'notes') { renderNotesTab(); return; }
+    if (S.tab === 'markers') { renderMarkersTab(); return; }
     if (S.tab === 'info') { renderInfoTab(); return; }
     if (S.lonePacket > 0) {
       const holder = h('div', { class: 'insp-scroll' });
@@ -1900,6 +1918,13 @@ function sessionView(app, id) {
           ['rate offset', (typeof d.cumulative_rate_offset_ppm === 'number'
             ? d.cumulative_rate_offset_ppm.toFixed(2) + ' ppm' : undefined)],
           ['path', d.path_trace],
+          ['BMCA', d.bmca && d.bmca !== 'UNKNOWN'
+            ? stateBadge(d.bmca, true) : undefined],
+          ['expected GM', (d.bmca === 'PRIORITY_INVERSION' || d.bmca === 'TIEBREAK')
+            ? h('span', null,
+                d.expected_gm_name ? h('b', null, d.expected_gm_name + ' ') : null,
+                h('span', { class: 'kv-v mono' }, d.expected_gm || ''))
+            : undefined],
         ]),
         null, d.history);
     });
@@ -1925,7 +1950,18 @@ function sessionView(app, id) {
             ? '≈' + pd.last_observed_gap_ms.toFixed(2) + ' ms (capture)' : undefined)],
           ['MDPdelayReq', md.pdelay_req_state !== 'NOT_ENABLED' ? md.pdelay_req_state : undefined],
           ['MDPdelayResp', md.pdelay_resp_state !== 'NOT_ENABLED' ? md.pdelay_resp_state : undefined],
+          ['MDSyncSend', md.sync_send_state && md.sync_send_state !== 'NOT_ENABLED'
+            ? md.sync_send_state : undefined],
           ['MD resets', md.resets || undefined],
+          ['announce', p.announce_state && p.announce_state !== 'NONE'
+            ? stateBadge(p.announce_state, true) : undefined],
+          ['gPTP capable', p.gptp_capable && p.gptp_capable !== 'UNKNOWN'
+            ? stateBadge(p.gptp_capable, true) : undefined],
+          ['req. intervals', p.requested_intervals
+            ? 'sync ' + p.requested_intervals.time_sync
+              + ' · announce ' + p.requested_intervals.announce
+              + ' · pdelay ' + p.requested_intervals.link_delay
+            : undefined],
         ]),
         h('div', { class: 'dim small' },
           '802.1AS Clause ' + (md.clause || '11') + ' media-dependent machines'),
@@ -2154,6 +2190,142 @@ function sessionView(app, id) {
     if (!N.preview && !notesTa.disabled) notesTa.focus();
   }
 
+  /* ────────── inspector: markers tab (user annotations) ──────────
+     Markers are personal bookmarks on the capture timeline. There is no
+     backend endpoint for them, so they live in localStorage, keyed per
+     session ("avb.markers.<id>"): [{id, ts, label, n}] with ts in seconds
+     since capture start. Drawn as amber dashed verticals in the timeline. */
+
+  const MK = { list: [] };
+
+  function loadMarkers() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(MARKERS_KEY_PREFIX + id) || '[]');
+      MK.list = Array.isArray(raw)
+        ? raw.filter((m) => m && typeof m.ts === 'number' && isFinite(m.ts) && typeof m.id === 'string')
+        : [];
+    } catch (err) {
+      MK.list = [];
+    }
+    MK.list.sort((a, b) => a.ts - b.ts);
+  }
+
+  function saveMarkers() {
+    try {
+      localStorage.setItem(MARKERS_KEY_PREFIX + id, JSON.stringify(MK.list));
+    } catch (err) { /* private mode / quota — markers stay in memory */ }
+  }
+
+  function addMarker(ts, label, n) {
+    const m = {
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+      ts,
+      label: label || '',
+      n: (typeof n === 'number' && n > 0) ? n : 0,
+    };
+    MK.list.push(m);
+    MK.list.sort((a, b) => a.ts - b.ts);
+    saveMarkers();
+    tlSchedule();
+    return m;
+  }
+
+  /* add at the selected event, else at the center of the visible window */
+  function addMarkerHere() {
+    const e = S.selected >= 0 ? S.events[S.selected] : null;
+    let m;
+    if (e) {
+      m = addMarker(e.ts, ((e.proto || '') + ' ' + (e.type || '')).trim(), e.n);
+    } else {
+      const mid = Math.min(Math.max((TL.t0 + TL.t1) / 2, 0), fullSpan());
+      m = addMarker(mid, '');
+    }
+    if (S.tab === 'markers') renderMarkersTab(m.id);
+    else toast('marker added at ' + fmtTime(m.ts) + ' — see the Markers tab');
+    return m;
+  }
+
+  function deleteMarker(mid) {
+    MK.list = MK.list.filter((m) => m.id !== mid);
+    saveMarkers();
+    tlSchedule();
+    if (S.tab === 'markers') renderMarkersTab();
+  }
+
+  /* pan the timeline to a time and scroll the events table to the nearest
+     filtered row — without changing the selection or leaving the tab */
+  function jumpToTs(ts) {
+    tlCenterOn(ts);
+    tlSchedule();
+    const a = S.filtered;
+    if (!a.length) return;
+    let lo = 0, hi = a.length - 1;   /* first row with event ts >= target */
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      const e = S.events[a[mid]];
+      if (e && e.ts < ts) lo = mid + 1; else hi = mid;
+    }
+    tableBody.scrollTop = Math.max(0, lo * ROW_H - tableBody.clientHeight / 2);
+  }
+
+  function renderMarkersTab(focusId) {
+    const addBtn = h('button', {
+      id: 'marker-add', class: 'btn btn-primary btn-sm', type: 'button',
+      title: 'add a marker at the selected event, or at the visible timeline center (shortcut: m)',
+      onclick: () => addMarkerHere(),
+    }, 'Add marker');
+    const rows = MK.list.map((m) => {
+      const labelIn = h('input', {
+        class: 'input input-sm marker-label', value: m.label || '',
+        placeholder: 'label…', spellcheck: 'false', dataset: { id: m.id },
+      });
+      labelIn.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') { ev.preventDefault(); labelIn.blur(); }
+      });
+      labelIn.addEventListener('blur', () => {
+        const v = labelIn.value.trim();
+        if (v !== (m.label || '')) {
+          m.label = v;
+          saveMarkers();
+          tlSchedule();          /* the timeline shows the label */
+        }
+      });
+      return h('div', { class: 'marker-row', dataset: { id: m.id } },
+        h('button', {
+          class: 'linklike mono marker-jump', type: 'button',
+          title: 'pan the timeline to this marker', onclick: () => jumpToTs(m.ts),
+        }, fmtTime(m.ts)),
+        labelIn,
+        m.n > 0
+          ? h('button', { class: 'linklike mono', type: 'button', onclick: () => jumpToPacket(m.n) }, 'pkt ' + m.n)
+          : h('span', { class: 'dim small' }, '—'),
+        h('button', {
+          class: 'btn btn-danger btn-sm marker-del', type: 'button',
+          dataset: { id: m.id }, title: 'delete this marker',
+          onclick: () => deleteMarker(m.id),
+        }, 'Delete'),
+      );
+    });
+    inspBody.replaceChildren(h('div', { class: 'insp-scroll' },
+      h('div', { class: 'state-actions' },
+        h('span', { class: 'dim small' },
+          'User markers — stored in this browser, drawn on the timeline'),
+        h('span', { class: 'toolbar-spacer' }),
+        addBtn),
+      h('div', { id: 'markers-list' },
+        h('div', { class: 'marker-head' },
+          h('span', null, 'Time'), h('span', null, 'Label'),
+          h('span', null, 'Packet'), h('span', null, '')),
+        rows.length ? rows : h('div', { class: 'empty small' },
+          'No markers yet — select an event and press "Add marker" (or the m key).'),
+      ),
+    ));
+    if (focusId) {
+      const inp = inspBody.querySelector('.marker-label[data-id="' + focusId + '"]');
+      if (inp) inp.focus();
+    }
+  }
+
   /* ────────── inspector: info tab ────────── */
 
   function flashInput(inp, cls) {
@@ -2370,8 +2542,20 @@ function sessionView(app, id) {
     const rect = TL.canvas.getBoundingClientRect();
     const x = ev.clientX - rect.left;
     if (x < TL.gutter) return;
-    const dy = ev.deltaMode === 1 ? ev.deltaY * 20 : ev.deltaY;
-    zoomAround(tOf(x), Math.exp(dy * 0.0016));
+    /* Firefox reports shift+wheel as deltaX (axis swap); Chromium keeps deltaY */
+    const raw = (ev.shiftKey && ev.deltaY === 0) ? ev.deltaX : ev.deltaY;
+    const d = ev.deltaMode === 1 ? raw * 20 : raw;
+    if (ev.shiftKey) {
+      /* shift+wheel: scroll left/right — wheel down/right pans to later times */
+      const span = TL.t1 - TL.t0;
+      const dt = d / Math.max(1, TL.w - TL.gutter) * span;
+      const c = clampDomain(TL.t0 + dt, TL.t1 + dt);
+      TL.t0 = c[0]; TL.t1 = c[1];
+      TL.follow = false;
+      tlSchedule();
+      return;
+    }
+    zoomAround(tOf(x), Math.exp(d * 0.0016));
   }
 
   /* Pan (never zoom) so time T is visible: used when a selection is made from
@@ -2684,6 +2868,42 @@ function sessionView(app, id) {
       ctx.fillText(lbl, lx + 1, chartB + 6);
     }
 
+    /* user markers: amber dashed verticals with a flag + label at the top */
+    if (MK.list.length) {
+      ctx.font = '10px ' + MONO_FONT;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      for (const m of MK.list) {
+        if (m.ts < TL.t0 || m.ts > TL.t1) continue;
+        const mx = Math.round(xOf(m.ts)) + 0.5;
+        if (mx < plotL) continue;
+        ctx.strokeStyle = MARKER_COLOR;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath();
+        ctx.moveTo(mx, 0);
+        ctx.lineTo(mx, chartB);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = MARKER_COLOR;
+        ctx.beginPath();
+        ctx.moveTo(mx, 0);
+        ctx.lineTo(mx + 6, 3.5);
+        ctx.lineTo(mx, 7);
+        ctx.closePath();
+        ctx.fill();
+        if (m.label) {
+          const mlbl = m.label.length > 24 ? m.label.slice(0, 23) + '…' : m.label;
+          const mtw = ctx.measureText(mlbl).width;
+          const mlx = Math.min(mx + 8, w - mtw - 4);
+          ctx.fillStyle = 'rgba(21,24,29,0.85)';
+          ctx.fillRect(mlx - 2, 1, mtw + 4, 12);
+          ctx.fillStyle = MARKER_COLOR;
+          ctx.fillText(mlbl, mlx, 2);
+        }
+      }
+    }
+
     /* gutter: lane labels (opaque, drawn last) */
     ctx.fillStyle = '#101318';
     ctx.fillRect(0, 0, plotL - 1, hh);
@@ -2710,6 +2930,74 @@ function sessionView(app, id) {
 
   const resizeObs = new ResizeObserver(() => { if (!S.closed) tlResize(); });
   resizeObs.observe(tlWrap);
+
+  /* ────────── pane resize: shift + right-click (drag) ──────────
+     shift+right-click (and drag) between the events table and the inspector
+     moves the split to the pointer; on the timeline it adjusts the lane
+     height. Both persist in localStorage. Note: Firefox may still open the
+     native context menu (shift bypasses page contextmenu handlers by
+     design), but the resize is applied from the pointerdown position, so a
+     single shift+right-click always works. */
+
+  let splitDrag = false;
+
+  function applySplit(pct) {
+    pct = Math.min(85, Math.max(15, pct));
+    eventsPanel.style.flex = '0 0 ' + pct.toFixed(1) + '%';
+    try { localStorage.setItem(SPLIT_KEY, pct.toFixed(1)); } catch (err) { /* ignore */ }
+    scheduleTable();             /* visible row window may have changed */
+  }
+
+  function splitFromPointer(ev) {
+    const rect = mainSplit.getBoundingClientRect();
+    const column = getComputedStyle(mainSplit).flexDirection === 'column';
+    const frac = column
+      ? (ev.clientY - rect.top) / Math.max(1, rect.height)
+      : (ev.clientX - rect.left) / Math.max(1, rect.width);
+    applySplit(frac * 100);
+  }
+
+  mainSplit.addEventListener('pointerdown', (ev) => {
+    if (ev.button !== 2 || !ev.shiftKey) return;
+    ev.preventDefault();
+    splitDrag = true;
+    try { mainSplit.setPointerCapture(ev.pointerId); } catch (err) { /* ignore */ }
+    splitFromPointer(ev);
+  });
+  mainSplit.addEventListener('pointermove', (ev) => { if (splitDrag) splitFromPointer(ev); });
+  const endSplitDrag = () => { splitDrag = false; };
+  mainSplit.addEventListener('pointerup', endSplitDrag);
+  mainSplit.addEventListener('pointercancel', endSplitDrag);
+  mainSplit.addEventListener('contextmenu', (ev) => { if (ev.shiftKey) ev.preventDefault(); });
+
+  {
+    /* restore the stored split */
+    const storedSplit = parseFloat(localStorage.getItem(SPLIT_KEY) || '');
+    if (storedSplit >= 15 && storedSplit <= 85) {
+      eventsPanel.style.flex = '0 0 ' + storedSplit + '%';
+    }
+  }
+
+  /* timeline lane-height resize (shift+right-drag vertically) */
+  let laneDrag = false;
+  tlWrap.addEventListener('pointerdown', (ev) => {
+    if (ev.button !== 2 || !ev.shiftKey) return;
+    ev.preventDefault();
+    laneDrag = true;
+    try { tlWrap.setPointerCapture(ev.pointerId); } catch (err) { /* ignore */ }
+  });
+  tlWrap.addEventListener('pointermove', (ev) => {
+    if (!laneDrag) return;
+    const rect = tlWrap.getBoundingClientRect();
+    const hLane = (ev.clientY - rect.top - TL.axisH) / Math.max(1, laneCount());
+    TL.laneH = Math.min(44, Math.max(14, hLane));
+    try { localStorage.setItem(LANEH_KEY, TL.laneH.toFixed(1)); } catch (err) { /* ignore */ }
+    tlLayout();
+  });
+  const endLaneDrag = () => { laneDrag = false; };
+  tlWrap.addEventListener('pointerup', endLaneDrag);
+  tlWrap.addEventListener('pointercancel', endLaneDrag);
+  tlWrap.addEventListener('contextmenu', (ev) => { if (ev.shiftKey) ev.preventDefault(); });
 
   /* ────────── header / status ────────── */
 
@@ -2897,6 +3185,7 @@ function sessionView(app, id) {
 
   /* ────────── init ────────── */
 
+  loadMarkers();
   renderInspector();
   updateCounts();
   updateTimeModeCtl();

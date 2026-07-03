@@ -1101,6 +1101,38 @@ details.history summary {
 .dev-name.flash-ok { border-color: var(--st-good); box-shadow: 0 0 0 1px var(--st-good); }
 .dev-name.flash-err { border-color: var(--c-err); box-shadow: 0 0 0 1px var(--c-err); }
 
+/* markers tab */
+
+.marker-head, .marker-row {
+  display: grid;
+  grid-template-columns: minmax(96px, 150px) 1fr 64px 68px;
+  gap: 8px;
+  align-items: center;
+  padding: 4px 0;
+}
+
+.marker-head {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border-strong);
+  padding-bottom: 4px;
+}
+
+.marker-row { border-top: 1px solid var(--border); }
+.marker-row:nth-child(2) { border-top: none; }  /* first row right after the head */
+
+.marker-jump {
+  text-align: left;
+  color: var(--st-warn);            /* matches the amber timeline markers */
+  text-decoration-color: color-mix(in srgb, var(--st-warn) 50%, transparent);
+}
+.marker-jump:hover { color: #ffd25e; }
+
+input.marker-label { width: 100%; }
+
 /* notes tab */
 
 .notes-wrap {

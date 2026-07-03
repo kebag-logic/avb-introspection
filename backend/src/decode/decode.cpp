@@ -724,13 +724,62 @@ void parseGptp(BeReader& r, Sink& s, DecodedPacket* out) {
         }
         break;
     }
-    case 0xC: // SIGNALING — targetPortIdentity + TLVs (display only)
+    case 0xC: { // SIGNALING — targetPortIdentity + organization TLVs
         if (body.remaining() >= 10) {
+            s.num("have_target", 1);
             s.id("target_clock_id", body.u64("targetPortIdentity"));
             s.num("target_port_number", body.u16("target port"));
         }
-        s.info("tlv_bytes", std::to_string(body.remaining()) + " bytes");
+        // Signaling TLVs are best-effort: an implausible/overrunning TLV list
+        // (vendor quirk, padding) must not fail the whole packet — stop
+        // walking and keep whatever decoded (unlike the mandatory Sync/
+        // Announce/Follow_Up bodies, which do throw on truncation).
+        unsigned tlvCount = 0;
+        while (body.remaining() >= 4) {
+            uint16_t tlvType = body.u16("tlv type");
+            uint16_t tlvLen = body.u16("tlv length");
+            if (tlvLen > body.remaining()) break;
+            BeReader tlv(body.bytes(tlvLen, "tlv value"));
+            ++tlvCount;
+            if (tlvType != 0x0003 || tlvLen < 6) continue;
+            uint64_t orgSub = tlv.u48("org id + subtype");
+            if ((orgSub >> 24) != 0x0080C2) continue;
+            switch (orgSub & 0xffffff) {
+            case 2: // message interval request TLV (10.6.4.3)
+                if (tlv.remaining() >= 4) {
+                    s.num("signaling_interval_request", 1);
+                    uint8_t ld = tlv.u8("logLinkDelayInterval");
+                    uint8_t tsi = tlv.u8("logTimeSyncInterval");
+                    uint8_t ai = tlv.u8("logAnnounceInterval");
+                    s.numd("req_link_delay_interval", ld, gptpLogIntervalStr(ld));
+                    s.numd("req_time_sync_interval", tsi, gptpLogIntervalStr(tsi));
+                    s.numd("req_announce_interval", ai, gptpLogIntervalStr(ai));
+                    s.hexf("interval_request_flags", tlv.u8("flags"), 2);
+                }
+                break;
+            case 4: // gPTP-capable TLV (10.6.4.4)
+                if (tlv.remaining() >= 2) {
+                    s.num("signaling_gptp_capable", 1);
+                    uint8_t gi = tlv.u8("logGptpCapableMessageInterval");
+                    s.numd("gptp_capable_interval", gi, gptpLogIntervalStr(gi));
+                    s.hexf("gptp_capable_flags", tlv.u8("flags"), 2);
+                }
+                break;
+            case 5: // gPTP-capable message interval request TLV (10.6.4.5)
+                if (tlv.remaining() >= 1) {
+                    s.num("signaling_gptp_capable_request", 1);
+                    uint8_t gr = tlv.u8("logGptpCapableMessageInterval");
+                    s.numd("req_gptp_capable_interval", gr,
+                           gptpLogIntervalStr(gr));
+                }
+                break;
+            default:
+                break;
+            }
+        }
+        s.num("signaling_tlv_count", tlvCount);
         break;
+    }
     default:
         break;
     }
@@ -766,6 +815,20 @@ void parseGptp(BeReader& r, Sink& s, DecodedPacket* out) {
                            idStr(ctx.at("requesting_clock_id")) + ":" +
                            std::to_string(ctx.at("requesting_port_number"));
             break;
+        case 0xC: {
+            std::string what;
+            if (ctx.at("signaling_gptp_capable")) what = "gPTP-capable";
+            else if (ctx.at("signaling_interval_request"))
+                what = "message interval request";
+            else if (ctx.at("signaling_gptp_capable_request"))
+                what = "gPTP-capable interval request";
+            else
+                what = std::to_string(ctx.at("signaling_tlv_count")) + " TLV(s)";
+            out->summary = "SIGNALING " + what + dom + " from " + portStr;
+            if (ctx.at("have_target")) // only when a target was actually decoded
+                out->summary += " to " + idStr(ctx.at("target_clock_id"));
+            break;
+        }
         default:
             out->summary = std::string(gptpMsgName(h.msgType)) + " seq " +
                            std::to_string(h.seq) + dom + " from " + portStr;

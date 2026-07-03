@@ -348,6 +348,30 @@ TEST(golden_gptp_adp_stale_gm) {
     CHECK(st.find("\"gptp_sync\":\"HEALTHY\"") != std::string::npos);
 }
 
+TEST(golden_gptp_bmca) {
+    auto s = runSession("testdata/gptp_bmca.pcap");
+    CHECK_EQ(s->decodeErrors.load(), (uint64_t)0);
+    // BMCA is a /state readout, not an event source — handovers are narrated
+    // by GM_CHANGED, and no BMCA text events are emitted.
+    CHECK(countTransitions(*s, "election not converged") == 0);
+    CHECK(countTransitions(*s, "AGED") >= 1); // A's announces stop in phase 3
+    std::string st = s->stateJson();
+    // Ends converged on B (prio1 200) once it drives Sync.
+    CHECK(st.find("\"bmca\":\"CONVERGED\"") != std::string::npos);
+    CHECK(st.find("\"expected_gm\":\"" + idStr(0x001b92fffe000002ull) + "\"") !=
+          std::string::npos);
+}
+
+TEST(golden_gptp_signaling) {
+    auto s = runSession("testdata/gptp_signaling.pcap");
+    CHECK_EQ(s->decodeErrors.load(), (uint64_t)0);
+    CHECK(countTransitions(*s, "-> GPTP_CAPABLE") == 1);
+    CHECK(countTransitions(*s, "-> CAPABLE_TIMED_OUT") == 1);
+    std::string st = s->stateJson();
+    CHECK(st.find("\"requested_intervals\"") != std::string::npos);
+    CHECK(st.find("\"time_sync\":\"-3 (125 ms)\"") != std::string::npos);
+}
+
 TEST(golden_milan_binding) {
     auto s = runSession("testdata/milan_binding.pcap");
     CHECK_EQ(s->decodeErrors.load(), (uint64_t)0);

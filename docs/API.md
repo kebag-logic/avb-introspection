@@ -352,6 +352,21 @@ Every state object has a `history` array of
       "cumulative_rate_offset_ppm": -3.2, // Follow_Up 802.1AS TLV
       "gm_time_base_indicator": 8,
       "path_trace": "0x001b21fffeef2ad0",
+      // Observer-side BMCA (802.1AS 10.3): the priority-vector comparison
+      // run over every announcer, checked against the clock driving Sync.
+      "expected_gm": "0x001b21fffeef2ad0", "expected_gm_name": "",
+      "sync_gm": "0x001b21fffeef2ad0",
+      // Observer readout only — no timeline events (a single tap point can't
+      // tell a real fault from a topology artifact, so the tool reports the
+      // observation; GM changes are narrated by the entity events instead):
+      //   CONVERGED           best-announced clock is driving Sync
+      //   PRIORITY_INVERSION  a better-priority1 clock is announced but not
+      //                       driving Sync — investigate
+      //   TIEBREAK            equal priority1; clockIdentity decides (common
+      //                       and benign with a single tap point)
+      //   UNKNOWN             not enough observed
+      "bmca": "CONVERGED",
+      "announcers": 1,
       "history": [...]
     }],
     "ports": [{
@@ -379,7 +394,17 @@ Every state object has a `history` array of
         "pdelay_resp_state": "WAITING_FOR_PDELAY_REQ",
                 // NOT_ENABLED | WAITING_FOR_PDELAY_REQ |
                 // SENT_PDELAY_RESP_WAITING_FOR_TIMESTAMP
+        "sync_send_state": "IDLE", // NOT_ENABLED | FOLLOW_UP_PENDING | IDLE
         "resets": 2       // MDPdelayReq RESET entries (lost responses)
+      },
+      "announce_state": "RECEIVED", // NONE | RECEIVED | AGED (10.2.12 aging)
+      "gptp_capable": "UNKNOWN",    // UNKNOWN | GPTP_CAPABLE |
+                                    // CAPABLE_TIMED_OUT (Signaling TLV,
+                                    // 10.2.15, timeout 10.7.3.3)
+      "requested_intervals": {      // last message-interval-request TLV
+        "link_delay": "0 (1 s)",    // sent BY this port (10.6.4.3);
+        "time_sync": "-3 (125 ms)", // absent if never seen
+        "announce": "0 (1 s)"
       },
       "history": [...]
     }]

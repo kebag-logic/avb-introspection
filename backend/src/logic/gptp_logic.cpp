@@ -32,6 +32,8 @@ constexpr double kDefaultAnnounceIntervalS = 1.0; // logAnnounceInterval 0
 constexpr double kDefaultPdelayIntervalS = 1.0;   // logPdelayReqInterval 0
 // Avnu gPTP test plan: pdelay responder turnaround limit.
 constexpr double kPdelayTurnaroundLimitS = 0.010;
+// 802.1AS-2020 10.7.3.3: gPtpCapableReceiptTimeout default = 9 intervals.
+constexpr int kGptpCapableTimeoutN = 9;
 constexpr size_t kMaxHist = 200;
 
 double intervalFromLog(uint64_t raw, double dflt) {
@@ -67,12 +69,12 @@ public:
 
         switch (msg) {
         case 0x0: onSync(*v, ts, n, dom, port); break;
-        case 0x8: onFollowUp(*v, ts, n, dom); break;
+        case 0x8: onFollowUp(*v, ts, n, dom, port); break;
         case 0x2: onPdelayReq(*v, ts, port); break;
         case 0x3: onPdelayResp(*v, ts); break;
         case 0xA: onPdelayRespFu(*v, ts, n); break;
         case 0xB: onAnnounce(*v, ts, n, dom, port); break;
-        case 0xC: port.signalingSent++; break;
+        case 0xC: onSignaling(*v, ts, n, port); break;
         default: break;
         }
     }
@@ -92,6 +94,7 @@ public:
                            " clock";
                 syncTransition(d, ts, 0, "LOST", why);
             }
+            evalBmca(d, ts, 0); // refresh the /state readout (no events)
             if (d.gmState == "GM_PRESENT" &&
                 ts > d.lastAnnounce +
                          kAnnounceReceiptTimeoutN * d.announceIntervalS) {
@@ -103,6 +106,27 @@ public:
                 // the best comparison basis for ADP.
             }
         }
+        // Announce aging (10.2.12) and gPTP-capable timeout (10.2.15).
+        for (auto& [key, p] : mPorts) {
+            if (p.announceState == "RECEIVED" && p.lastAnnounceTs >= 0 &&
+                ts > p.lastAnnounceTs +
+                         kAnnounceReceiptTimeoutN * p.announceIntervalS + 0.5)
+                portTransition(p, &Port::announceState, ts, 0, "RECEIVED",
+                               "AGED",
+                               "no Announce within announceReceiptTimeout"
+                               " — port information AGED (10.2.12)");
+            if (p.gptpCapable == "GPTP_CAPABLE" &&
+                ts > p.lastCapableTs +
+                         kGptpCapableTimeoutN * p.capableIntervalS) {
+                portTransition(p, &Port::gptpCapable, ts, 0, "GPTP_CAPABLE",
+                               "CAPABLE_TIMED_OUT",
+                               "no gPTP-capable TLV within " +
+                                   std::to_string(kGptpCapableTimeoutN) +
+                                   " intervals (gPtpCapableReceiptTimeout,"
+                                   " 10.7.3.3)");
+            }
+        }
+
         // Expire pdelay exchanges the responder never completed.
         for (auto it = mExchanges.begin(); it != mExchanges.end();) {
             auto pIt = mPorts.find(it->first);
@@ -151,6 +175,16 @@ public:
             w.kv("cumulative_rate_offset_ppm", d.rateOffsetPpm);
             w.kv("gm_time_base_indicator", (uint64_t)d.gmTimeBaseIndicator);
             w.kv("path_trace", d.pathTrace);
+            // Observer-side BMCA (10.3): what the announces say should win.
+            w.kv("expected_gm", d.expectedGm ? idStr(d.expectedGm) : "");
+            w.kv("expected_gm_name",
+                 mShared && d.expectedGm ? mShared->nameOf(d.expectedGm) : "");
+            w.kv("sync_gm", d.syncSenderGm ? idStr(d.syncSenderGm) : "");
+            // UNKNOWN | CONVERGED | PRIORITY_INVERSION (better clock isn't
+            // driving Sync) | TIEBREAK (equal priority1, clockIdentity
+            // decides — informational, common with a single tap point).
+            w.kv("bmca", bmcaState(d));
+            w.kv("announcers", (uint64_t)d.announcers.size());
             histJson(w, d.hist);
             w.endObj();
         }
@@ -188,8 +222,21 @@ public:
                  p.mdReqState.empty() ? "NOT_ENABLED" : p.mdReqState);
             w.kv("pdelay_resp_state",
                  p.mdRespState.empty() ? "NOT_ENABLED" : p.mdRespState);
+            w.kv("sync_send_state",
+                 p.mdSyncSendState.empty() ? "NOT_ENABLED" : p.mdSyncSendState);
             w.kv("resets", (uint64_t)p.mdResets);
             w.endObj();
+            w.kv("announce_state",
+                 p.announceState.empty() ? "NONE" : p.announceState);
+            w.kv("gptp_capable",
+                 p.gptpCapable.empty() ? "UNKNOWN" : p.gptpCapable);
+            if (p.reqIntervalsSeen) {
+                w.key("requested_intervals").beginObj();
+                w.kv("link_delay", gptpLogIntervalStr(p.reqLinkDelay));
+                w.kv("time_sync", gptpLogIntervalStr(p.reqTimeSync));
+                w.kv("announce", gptpLogIntervalStr(p.reqAnnounce));
+                w.endObj();
+            }
             histJson(w, p.hist);
             w.endObj();
         }
@@ -217,6 +264,44 @@ private:
         bool haveTimeBase = false;
         std::string pathTrace;
         std::map<uint16_t, double> pendingSyncs; // seq -> ts (two-step)
+
+        // BMCA (10.3): every announcer's message priority vector, so the
+        // observer can run the comparison itself and check convergence.
+        struct AnnVec {
+            uint8_t p1 = 255, clockClass = 255, accuracy = 0xFE;
+            uint16_t variance = 0xFFFF;
+            uint8_t p2 = 255;
+            uint64_t gmId = 0;
+            uint16_t stepsRemoved = 0;
+            uint64_t srcClock = 0;
+            uint16_t srcPort = 0;
+            double lastTs = -1;
+            double announceIntervalS = kDefaultAnnounceIntervalS;
+            /** systemIdentity : stepsRemoved : sourcePortIdentity ordering
+             *  per 10.3.2/10.3.5 — lexicographic, smaller is better. */
+            bool betterThan(const AnnVec& o) const {
+                return std::make_tuple(p1, clockClass, accuracy, variance, p2,
+                                       gmId, stepsRemoved, srcClock, srcPort) <
+                       std::make_tuple(o.p1, o.clockClass, o.accuracy,
+                                       o.variance, o.p2, o.gmId,
+                                       o.stepsRemoved, o.srcClock, o.srcPort);
+            }
+            /** The quality part of systemIdentity (everything above the
+             *  clockIdentity/steps/port tiebreak). Two clocks equal here are
+             *  separated only by clockIdentity — a benign tiebreak. */
+            std::tuple<uint8_t, uint8_t, uint8_t, uint16_t, uint8_t> quality()
+                const {
+                return {p1, clockClass, accuracy, variance, p2};
+            }
+        };
+        std::map<uint64_t, AnnVec> announcers; // sender port key -> vector
+        uint64_t expectedGm = 0;   // GM of the best announced vector
+        uint8_t expectedP1 = 0;
+        AnnVec expectedVec, syncVec; // best-announced and Sync-sender vectors
+        bool haveExpectedVec = false, haveSyncVec = false;
+        uint64_t syncSenderGm = 0; // GM announced by the Sync-sending port
+        uint8_t syncSenderP1 = 255;
+
         std::vector<HistEntry> hist;
     };
     struct Port {
@@ -241,6 +326,22 @@ private:
         std::string mdReqState;  // MDPdelayReq (Figure 11-9)
         std::string mdRespState; // MDPdelayResp (Figure 11-10)
         uint32_t mdResets = 0;
+        // MDSyncSend (11.2, observable slice): two-step Sync sent -> the
+        // follow-up is owed -> idle until the next sync.
+        std::string mdSyncSendState; // "" NOT_ENABLED / FOLLOW_UP_PENDING / IDLE
+        uint16_t pendingFuSeq = 0;
+        // Announce reception aging (10.2.12 information state, observer view).
+        // Interval is per-port (each announcer sets its own rate) so a fast
+        // neighbour cannot falsely age a slower healthy one.
+        std::string announceState; // "" NONE / RECEIVED / AGED
+        double lastAnnounceTs = -1, announceIntervalS = kDefaultAnnounceIntervalS;
+        // GptpCapableReceive (10.2.15): neighbor advertises gPTP-capable via
+        // Signaling; declared not capable after gPtpCapableReceiptTimeout.
+        std::string gptpCapable; // "" UNKNOWN / GPTP_CAPABLE / CAPABLE_TIMED_OUT
+        double lastCapableTs = -1, capableIntervalS = 1.0;
+        // Message interval request TLV last sent by this port (10.6.4.3).
+        bool reqIntervalsSeen = false;
+        uint8_t reqLinkDelay = 0, reqTimeSync = 0, reqAnnounce = 0;
         std::vector<HistEntry> hist;
     };
     struct Exchange { // one outstanding pdelay exchange per requester port
@@ -436,11 +537,98 @@ private:
             d.pendingSyncs[(uint16_t)v.at("sequence_id")] = ts;
             if (d.pendingSyncs.size() > 64)
                 d.pendingSyncs.erase(d.pendingSyncs.begin());
+            port.mdSyncSendState = "FOLLOW_UP_PENDING";
+            port.pendingFuSeq = (uint16_t)v.at("sequence_id");
+        } else if (port.mdSyncSendState != "FOLLOW_UP_PENDING") {
+            // One-step: no follow-up owed — but don't clear a Follow_Up still
+            // owed from an earlier two-step Sync on this port.
+            port.mdSyncSendState = "IDLE";
         }
+
+        // BMCA: the sync sender's own announced vector tells us which GM is
+        // actually driving time. Until that sender's Announce is observed the
+        // driving GM is genuinely unknown — never carry a previous sender's
+        // GM forward (that would read as a false CONVERGED).
+        auto av = d.announcers.find(senderKey);
+        d.syncSenderGm = av != d.announcers.end() ? av->second.gmId : 0;
+        evalBmca(d, ts, n);
         publish(d);
     }
 
-    void onFollowUp(VarLayerContext& v, double ts, uint32_t n, uint8_t dom) {
+    void onSignaling(VarLayerContext& v, double ts, uint32_t n, Port& port) {
+        port.signalingSent++;
+        if (v.at("signaling_gptp_capable")) {
+            // GptpCapableReceive (10.2.15): the sender advertises itself as
+            // gPTP-capable; the timeout runs from the declared interval.
+            port.lastCapableTs = ts;
+            port.capableIntervalS =
+                intervalFromLog(v.at("gptp_capable_interval"), 1.0);
+            if (port.gptpCapable != "GPTP_CAPABLE")
+                portTransition(port, &Port::gptpCapable, ts, n, "UNKNOWN",
+                               "GPTP_CAPABLE",
+                               "Signaling gPTP-capable TLV (interval " +
+                                   fmtGap(port.capableIntervalS) + ")");
+        }
+        if (v.at("signaling_interval_request")) {
+            port.reqIntervalsSeen = true;
+            port.reqLinkDelay = (uint8_t)v.at("req_link_delay_interval");
+            port.reqTimeSync = (uint8_t)v.at("req_time_sync_interval");
+            port.reqAnnounce = (uint8_t)v.at("req_announce_interval");
+        }
+    }
+
+    /** Observer-side BMCA (10.3): recompute the best announced priority
+     *  vector and compare it to the clock actually driving Sync. This
+     *  maintains the /state readout only — it emits NO transition events.
+     *  From a single tap point a "mismatch" cannot be reliably told apart
+     *  from a topology artifact (the better clock may be the real GM one hop
+     *  away, legitimately relayed by the port we see syncing), so the tool
+     *  reports the observation for the user to investigate rather than
+     *  asserting a fault. Handovers are already narrated by GM_CHANGED. */
+    void evalBmca(Domain& d, double ts, uint32_t /*n*/) {
+        // Age each announcer out by its OWN advertised interval (10.2.12),
+        // not a domain-wide one — a fast neighbour must not age a slow one.
+        for (auto it = d.announcers.begin(); it != d.announcers.end();) {
+            if (ts - it->second.lastTs >
+                kAnnounceReceiptTimeoutN * it->second.announceIntervalS + 0.5)
+                it = d.announcers.erase(it);
+            else
+                ++it;
+        }
+        const Domain::AnnVec* best = nullptr;
+        for (auto& [key, vec] : d.announcers)
+            if (!best || vec.betterThan(*best)) best = &vec;
+        d.expectedGm = best ? best->gmId : 0;
+        d.expectedP1 = best ? best->p1 : 0;
+        d.haveExpectedVec = best != nullptr;
+        if (best) d.expectedVec = *best;
+        auto syncIt = d.announcers.find(d.syncSender);
+        d.haveSyncVec = syncIt != d.announcers.end();
+        if (d.haveSyncVec) d.syncVec = syncIt->second;
+        d.syncSenderP1 = d.haveSyncVec ? syncIt->second.p1 : 255;
+    }
+
+    /** BMCA readout for /state. A disagreement is a PRIORITY_INVERSION when
+     *  the best-announced clock outranks the Sync sender by the *quality*
+     *  part of systemIdentity (priority1/clockClass/accuracy/variance/
+     *  priority2 — a real inversion at any of those levels), and a benign
+     *  TIEBREAK when the two are equal in quality and only clockIdentity
+     *  separates them (not actionable from a single tap point). */
+    const char* bmcaState(const Domain& d) const {
+        if (!d.expectedGm || !d.syncSenderGm) return "UNKNOWN";
+        if (d.expectedGm == d.syncSenderGm) return "CONVERGED";
+        if (!d.haveExpectedVec || !d.haveSyncVec) return "UNKNOWN";
+        return d.expectedVec.quality() == d.syncVec.quality()
+                   ? "TIEBREAK"
+                   : "PRIORITY_INVERSION";
+    }
+
+    void onFollowUp(VarLayerContext& v, double ts, uint32_t n, uint8_t dom,
+                    Port& port) {
+        // MDSyncSend: the owed follow-up went out.
+        if (port.mdSyncSendState == "FOLLOW_UP_PENDING" &&
+            port.pendingFuSeq == (uint16_t)v.at("sequence_id"))
+            port.mdSyncSendState = "IDLE";
         auto& d = getDomain(dom);
         auto it = d.pendingSyncs.find((uint16_t)v.at("sequence_id"));
         if (it != d.pendingSyncs.end()) {
@@ -469,8 +657,10 @@ private:
         auto& d = getDomain(dom);
         double sinceLast = d.lastAnnounce >= 0 ? ts - d.lastAnnounce : 0;
         d.lastAnnounce = ts;
-        d.announceIntervalS = intervalFromLog(v.at("log_message_interval"),
-                                              kDefaultAnnounceIntervalS);
+        double portAnnInterval = intervalFromLog(v.at("log_message_interval"),
+                                                 kDefaultAnnounceIntervalS);
+        d.announceIntervalS = portAnnInterval; // domain-level display value
+        port.announceIntervalS = portAnnInterval; // per-port aging basis
         d.announceCount++;
         port.announceSent++;
         becomeMaster(port, dom, ts, n,
@@ -510,6 +700,40 @@ private:
 
         std::string trace;
         if (v.getBytes("path_trace", trace)) d.pathTrace = trace;
+
+        // Announce reception state (10.2.12 observer view).
+        port.lastAnnounceTs = ts;
+        if (port.announceState == "AGED")
+            portTransition(port, &Port::announceState, ts, n, "NONE",
+                           "RECEIVED", "announces resumed");
+        else
+            port.announceState = "RECEIVED"; // first observation: no event
+
+        // BMCA bookkeeping: record/refresh this announcer's vector.
+        uint64_t senderKey = portKey(port.clockId, port.portNum);
+        if ((uint16_t)v.at("steps_removed") < 255) {
+            auto& vec = d.announcers[senderKey];
+            vec.p1 = (uint8_t)v.at("gm_priority1");
+            vec.clockClass = (uint8_t)v.at("gm_clock_class");
+            vec.accuracy = (uint8_t)v.at("gm_clock_accuracy");
+            vec.variance = (uint16_t)v.at("gm_clock_variance");
+            vec.p2 = (uint8_t)v.at("gm_priority2");
+            vec.gmId = gm;
+            vec.stepsRemoved = (uint16_t)v.at("steps_removed");
+            vec.srcClock = port.clockId;
+            vec.srcPort = port.portNum;
+            vec.lastTs = ts;
+            vec.announceIntervalS = portAnnInterval;
+        } else {
+            // stepsRemoved >= 255: unqualified — drop it, and if this port was
+            // the Sync sender the driving GM is now unknown, not stale.
+            d.announcers.erase(senderKey);
+            if (senderKey == d.syncSender) d.syncSenderGm = 0;
+        }
+        if (senderKey == d.syncSender &&
+            (uint16_t)v.at("steps_removed") < 255)
+            d.syncSenderGm = gm;
+        evalBmca(d, ts, n);
         publish(d);
     }
 

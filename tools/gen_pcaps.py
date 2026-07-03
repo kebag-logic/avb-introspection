@@ -589,6 +589,87 @@ def scenario_gptp_adp_stale_gm():
     write_pcap("testdata/gptp_adp_stale_gm.pcap", pk)
 
 
+def gptp_signaling(clock, seq, tlv):
+    body = struct.pack(">QH", GPTP_A, 1)  # targetPortIdentity (any)
+    body += tlv
+    return gptp_hdr(0xC, body, clock, seq, log_interval=0x7F)
+
+
+def tlv_interval_request(link_delay=0, time_sync=-3, announce=0, flags=3):
+    return (struct.pack(">HH", 0x0003, 12)
+            + bytes([0x00, 0x80, 0xC2, 0x00, 0x00, 0x02])
+            + struct.pack(">bbbB2x", link_delay, time_sync, announce, flags))
+
+
+def tlv_gptp_capable(log_interval=0, flags=1):
+    return (struct.pack(">HH", 0x0003, 12)
+            + bytes([0x00, 0x80, 0xC2, 0x00, 0x00, 0x04])
+            + struct.pack(">bB4x", log_interval, flags))
+
+
+def scenario_gptp_bmca():
+    """BMCA divergence: a better clock announces while a worse one keeps
+    driving Sync (a standing mismatch, past the 5-interval hold), then the
+    network converges once the better clock takes over Sync."""
+    pk = []
+    seq = 0
+    # Phase 1 (0-2 s): A (prio1 248) announces and syncs — converged.
+    t = 0.0
+    while t < 2.0:
+        if abs(t - round(t)) < 1e-9:
+            pk.append((t, eth(GPTP_MC, TALKER_MAC, ETYPE_GPTP,
+                              gptp_announce(GPTP_A, int(t), GPTP_A, p1=248))))
+        seq += 1
+        pk.append((t + 0.01, eth(GPTP_MC, TALKER_MAC, ETYPE_GPTP,
+                                 gptp_sync(GPTP_A, seq))))
+        t += 0.125
+    # Phase 2 (2-10 s): B announces prio1 200 (better) but A keeps syncing —
+    # a standing mismatch that outlasts the hold and warns once.
+    t = 2.0
+    while t < 10.0:
+        if abs(t - round(t)) < 1e-9:
+            pk.append((t, eth(GPTP_MC, TALKER_MAC, ETYPE_GPTP,
+                              gptp_announce(GPTP_A, int(t), GPTP_A, p1=248))))
+            pk.append((t + 0.02, eth(GPTP_MC, LISTENER_MAC, ETYPE_GPTP,
+                                     gptp_announce(GPTP_B, int(t), GPTP_B,
+                                                   p1=200))))
+        seq += 1
+        pk.append((t + 0.01, eth(GPTP_MC, TALKER_MAC, ETYPE_GPTP,
+                                 gptp_sync(GPTP_A, seq))))
+        t += 0.125
+    # Phase 3 (10-18 s): B takes over Sync and keeps announcing — sustained
+    # convergence clears the alarm.
+    t = 10.0
+    while t < 18.0:
+        if abs(t - round(t)) < 1e-9:
+            pk.append((t + 0.02, eth(GPTP_MC, LISTENER_MAC, ETYPE_GPTP,
+                                     gptp_announce(GPTP_B, int(t), GPTP_B,
+                                                   p1=200))))
+        seq += 1
+        pk.append((t + 0.03, eth(GPTP_MC, LISTENER_MAC, ETYPE_GPTP,
+                                 gptp_sync(GPTP_B, seq))))
+        t += 0.125
+    pk.sort(key=lambda x: x[0])
+    write_pcap("testdata/gptp_bmca.pcap", pk)
+
+
+def scenario_gptp_signaling():
+    """Signaling TLVs: interval request + gPTP-capable with timeout."""
+    pk = []
+    pk.append((0.5, eth(GPTP_MC, TALKER_MAC, ETYPE_GPTP,
+                        gptp_signaling(GPTP_A, 1, tlv_interval_request()))))
+    for i in range(3):  # B advertises gPTP-capable at 1 s interval
+        pk.append((1.0 + i, eth(GPTP_MC, LISTENER_MAC, ETYPE_GPTP,
+                                gptp_signaling(GPTP_B, 10 + i,
+                                               tlv_gptp_capable()))))
+    # Announces keep capture time advancing well past the 9 s timeout.
+    for i in range(15):
+        pk.append((float(i), eth(GPTP_MC, TALKER_MAC, ETYPE_GPTP,
+                                 gptp_announce(GPTP_A, 100 + i, GPTP_A))))
+    pk.sort(key=lambda x: x[0])
+    write_pcap("testdata/gptp_signaling.pcap", pk)
+
+
 def scenario_milan_binding():
     """Milan v1.2 §5.5.3 listener sink lifecycle: bind -> probe -> settle ->
     talker departs/returns -> re-settle -> unbind."""
@@ -748,6 +829,8 @@ def main():
     scenario_gptp_sync_loss()
     scenario_gptp_pdelay()
     scenario_gptp_adp_stale_gm()
+    scenario_gptp_bmca()
+    scenario_gptp_signaling()
     scenario_milan_binding()
     scenario_malformed()
     scenario_milan()
