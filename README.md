@@ -9,20 +9,20 @@ protocols (e.g. each entity's announced grandmaster is checked against the
 grandmaster actually observed on the wire), and presents events, per-packet
 detail, timelines and live state in a web UI.
 
-The UI renders the reconstructed protocol **state machines as live spec
-diagrams** (Milan ACMP listener sink, ADP, 802.1AS media-dependent, and the
-802.1Q MRP Applicant/Registrar). Every diagram overlays the state **as of where
-the timeline cursor sits**: select a packet (in the event table or on the
-timeline) and each machine's highlighted *current* state — and, in the
-**Topology** view, the sync/stream links and gPTP port roles — re-time to that
-moment; with nothing selected they show the final observed state. Click any
-**transition** in a diagram to list the event(s) that drove it, each linking
-straight to its triggering packet. The Topology view maps the observed
-devices — click an endstation or a port to see all of its state machines, timed
-to the cursor, in one place — and always shows the **network-wide** state
-machines that belong to no single device (the gPTP domain grandmaster/BMCA
-lifecycle, the MSRP SR reservation domain, and MAAP multicast-address claims)
-above the graph.
+The **Network Status** view is the single home for the observed topology and
+every reconstructed protocol **state machine as a live spec diagram** (Milan
+ACMP listener sink, ADP, 802.1AS media-dependent, and the 802.1Q MRP
+Applicant/Registrar). It maps the observed devices; click an endstation or port
+to see all of its state machines, **grouped per protocol** and each in a
+foldable, resizable card. Above the graph it always shows the **network-wide**
+machines that belong to no single device — the gPTP domain grandmaster/BMCA
+lifecycle, the MSRP SR reservation domain, and MAAP multicast-address claims.
+Every diagram overlays the state **as of where the timeline cursor sits**:
+select a packet (in the event table or on the timeline) and each machine's
+highlighted *current* state — and the sync/stream links and gPTP port roles —
+re-time to that moment; with nothing selected they show the final observed
+state. Click any **transition** to list the event(s) that drove it, each
+linking straight to its triggering packet.
 
 The tool is an *observer* — it decodes and correlates traffic; generating
 traffic is [TSN-GEN]'s job. See [REQUIREMENTS.md](REQUIREMENTS.md) for the

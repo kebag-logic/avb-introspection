@@ -1303,6 +1303,35 @@ input.marker-label { width: 100%; }
 .machine-head { margin-bottom: 8px; }
 .machine-title { font-size: 13px; font-weight: 700; }
 .machine-sub { display: block; margin-top: 2px; }
+
+/* ── collapsible machine cards (square fold toggle) ── */
+.machine-head.is-foldhead { position: relative; padding-left: 24px; cursor: pointer; }
+.sm-fold {
+  width: 16px; height: 16px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border); border-radius: 3px;
+  background: transparent; color: var(--muted);
+  cursor: pointer; padding: 0; font: 10px/1 var(--mono);
+}
+.machine-head.is-foldhead > .sm-fold { position: absolute; left: 0; top: 1px; }
+.sm-fold::before { content: '▾'; }
+.is-collapsed > .machine-head > .sm-fold::before,
+.sm-group.is-collapsed > .sm-group-head > .sm-fold::before { content: '▸'; }
+.sm-fold:hover { color: var(--text); border-color: var(--accent); }
+.machine-card.is-collapsed { padding-bottom: 8px; }
+.machine-card.is-collapsed > :not(.machine-head) { display: none; }
+
+/* ── per-protocol groups ── */
+.sm-group {
+  margin: 0 0 14px;
+  padding-left: 10px;
+  border-left: 3px solid color-mix(in srgb, var(--pc) 60%, transparent);
+}
+.sm-group-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.sm-group-head .sm-fold { color: var(--pc); }
+.sm-group-dot { width: 9px; height: 9px; border-radius: 2px; background: var(--pc); flex: none; }
+.sm-group-title { font-weight: 700; font-size: 12.5px; color: var(--text); }
+.sm-group.is-collapsed > .sm-group-body { display: none; }
 .machine-note {
   margin-top: 8px;
   font-size: 11px;
@@ -1335,7 +1364,13 @@ input.marker-label { width: 100%; }
   color: var(--muted);
 }
 
-.sm-scroll { overflow-x: auto; overflow-y: hidden; }
+/* resizable pane: drag the bottom edge to grow/shrink the diagram viewport;
+   fold (square, above) fully collapses it */
+.sm-scroll {
+  overflow: auto;
+  resize: vertical;
+  min-height: 96px;
+}
 
 .sm-svg { display: block; }
 
@@ -1380,7 +1415,9 @@ input.marker-label { width: 100%; }
 
 /* clickable transitions: a transparent wide hit-stroke catches the click and a
    hover cue tells the user the transition is inspectable */
-.sm-hit-path { fill: none; stroke: transparent; stroke-width: 16; cursor: pointer; }
+/* pointer-events:stroke makes the invisible wide stroke a hit target even
+   though it is transparent (visiblePainted would ignore a transparent paint) */
+.sm-hit-path { fill: none; stroke: transparent; stroke-width: 18; cursor: pointer; pointer-events: stroke; }
 .sm-edge.is-hover {
   stroke: var(--sm-accent);
   stroke-width: 3;

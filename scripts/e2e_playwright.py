@@ -172,36 +172,14 @@ def run_tests(page, url):
     expect(page.locator(".erow .c-src", has_text="FOH Rack").first
            ).to_be_visible(timeout=5000)
 
-    # ---- Machines tab: spec state-machine diagrams with live overlay -------
-    page.locator("#tab-machines").click()
-    acmp = page.locator("#machine-acmp")
-    expect(acmp).to_be_visible(timeout=10000)
-    # The ACMP sink diagram has exactly one active (current-state) node.
-    expect(acmp.locator(".sm-node.is-active")).to_have_count(1)
-    # All four Milan machines are drawn.
-    for mid in ("machine-adp-entity", "machine-adp-advertise",
-                "machine-adp-discovery"):
-        expect(page.locator("#" + mid)).to_be_visible()
-    # Instance selectors are present.
-    expect(page.locator("#machine-sink")).to_be_visible()
-    expect(page.locator("#machine-entity")).to_be_visible()
-
-    # MRP registrar machine + interactive event step-through.
-    expect(page.locator("#machine-mrp-registrar")).to_be_visible()
-    expect(page.locator("#machine-mrp-applicant")).to_be_visible()
-    log_rows = page.locator("#mrp-log .mrp-log-row")
-    if log_rows.count() >= 2:
-        # Clicking a log row updates the trigger caption to name the event.
-        log_rows.first.click()
-        page.wait_for_timeout(150)
-        trig = page.locator("#mrp-trigger").inner_text()
-        assert "triggered by" in trig.lower(), \
-            f"MRP step-through trigger caption not updated: {trig!r}"
-        expect(page.locator("#machine-mrp-registrar .sm-node.is-active")
-               ).to_have_count(1)
-
-    # ---- Topology tab: device graph + per-device state machines ------------
-    page.locator("#tab-topology").click()
+    # ---- Network Status tab: device graph + all state machines -------------
+    # (The old separate "Machines" tab is folded into here.)
+    assert page.locator("#tab-machines").count() == 0, \
+        "the Machines tab should be removed (merged into Network Status)"
+    nstab = page.locator("#tab-topology")
+    assert nstab.inner_text().strip() == "Network Status", \
+        f"topology tab should be renamed 'Network Status', got {nstab.inner_text()!r}"
+    nstab.click()
     page.wait_for_timeout(400)
     nodes = page.locator(".topo-node")
     assert nodes.count() >= 2, f"expected >=2 topology device nodes, got {nodes.count()}"
@@ -221,6 +199,29 @@ def run_tests(page, url):
                     + page.locator("#topo-net-maap").count()
                     + page.locator("#topo-net-gptp-domain").count())
     assert net_machines >= 1, "network section shows no network-wide machines"
+    # Machines are grouped per protocol and each card has a square fold toggle.
+    assert page.locator(".sm-group").count() >= 2, \
+        "state machines should be grouped per protocol"
+    assert page.locator(".sm-fold").count() >= 2, "cards should have a fold toggle"
+    # Folding a diagram card hides its diagram; unfolding restores it.
+    fcard = page.locator(".machine-card.is-foldable:has(.sm-scroll)").first
+    fcard.scroll_into_view_if_needed()
+    fcard.locator(".sm-fold").first.click()
+    page.wait_for_timeout(120)
+    assert not fcard.locator(".sm-scroll").is_visible(), "fold should hide the diagram"
+    fcard.locator(".sm-fold").first.click()
+    page.wait_for_timeout(120)
+    expect(fcard.locator(".sm-scroll")).to_be_visible()
+    # Clicking a transition ARROW (not just the label) opens the trigger popover.
+    hits = page.locator(".sm-hit-path")
+    if hits.count():
+        hits.first.dispatch_event("click")
+        page.wait_for_timeout(150)
+        expect(page.locator(".smpop")).to_be_visible()
+        assert page.locator(".smpop .smpop-row").count() >= 1, \
+            "arrow-click popover shows no triggering events"
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(80)
     # Clicking a different device switches the panel to its machines.
     first_sel = page.locator(".topo-node.is-selected").get_attribute("data-mac")
     other = None
@@ -257,13 +258,6 @@ def run_tests(page, url):
         f"selecting a packet should re-time the topology overlay, got {asof_early!r}"
     assert asof_early != asof_late, \
         "topology overlay did not re-time when the timeline selection changed"
-
-    # Machines tab likewise tracks the cursor and has no Refresh button.
-    page.locator("#tab-machines").click()
-    page.wait_for_timeout(300)
-    assert page.get_by_role("button", name="Refresh").count() == 0, \
-        "Machines tab should not expose a Refresh button"
-    expect(page.locator(".asof").first).to_be_visible()
 
     # Changing the selected packet must NOT yank the inspector scroll position.
     scroller = page.locator(".insp-scroll")

@@ -892,6 +892,71 @@ function showEdgeTriggers(ev, edge, triggers, def) {
   }, 0);
 }
 
+/* ── collapsible cards + per-protocol grouping ─────────────────────────────
+   Fold state persists (by key) across re-renders so scrubbing / reselecting
+   doesn't re-expand what the user folded. */
+const smCollapsed = new Set();       /* folded machine cards, by key */
+const smGroupCollapsed = new Set();  /* folded protocol groups, by key */
+
+function foldSquare(expanded) {
+  return h('button', {
+    class: 'sm-fold', type: 'button',
+    'aria-expanded': expanded ? 'true' : 'false', title: 'collapse / expand',
+  });
+}
+
+/* add a square fold toggle to a .machine-card (header stays; body hides) */
+function foldableCard(card, key) {
+  const head = card.querySelector(':scope > .machine-head');
+  if (!head || card.classList.contains('is-foldable')) return card;
+  card.classList.add('is-foldable');
+  if (key && smCollapsed.has(key)) card.classList.add('is-collapsed');
+  const btn = foldSquare(!card.classList.contains('is-collapsed'));
+  const toggle = () => {
+    const c = card.classList.toggle('is-collapsed');
+    btn.setAttribute('aria-expanded', c ? 'false' : 'true');
+    if (key) { if (c) smCollapsed.add(key); else smCollapsed.delete(key); }
+  };
+  btn.addEventListener('click', (e) => { e.stopPropagation(); toggle(); });
+  head.insertBefore(btn, head.firstChild);
+  head.classList.add('is-foldhead');
+  head.addEventListener('click', (e) => {
+    if (e.target.closest('button, a, input, select, textarea, .linklike')) return;
+    toggle();
+  });
+  return card;
+}
+
+/* wrap machine cards of one protocol in a foldable, colour-coded group */
+function protoGroup(label, protoKey, cards, groupKey) {
+  const kids = (cards || []).filter(Boolean);
+  if (!kids.length) return null;
+  const collapsed = groupKey && smGroupCollapsed.has(groupKey);
+  const btn = foldSquare(!collapsed);
+  const head = h('div', { class: 'sm-group-head is-foldhead' },
+    btn,
+    h('span', { class: 'sm-group-dot' }),
+    h('span', { class: 'sm-group-title' }, label),
+    h('span', { class: 'sm-group-count dim small' },
+      kids.length + (kids.length === 1 ? ' machine' : ' machines')));
+  const group = h('div', {
+    class: 'sm-group' + (collapsed ? ' is-collapsed' : ''),
+    dataset: { proto: protoKey },
+    style: '--pc:' + (PROTO_COLORS[protoKey] || 'var(--muted)'),
+  }, head, h('div', { class: 'sm-group-body' }, kids));
+  const toggle = () => {
+    const c = group.classList.toggle('is-collapsed');
+    btn.setAttribute('aria-expanded', c ? 'false' : 'true');
+    if (groupKey) { if (c) smGroupCollapsed.add(groupKey); else smGroupCollapsed.delete(groupKey); }
+  };
+  btn.addEventListener('click', (e) => { e.stopPropagation(); toggle(); });
+  head.addEventListener('click', (e) => {
+    if (e.target.closest('button, a, .linklike')) return;
+    toggle();
+  });
+  return group;
+}
+
 function drawMachine(container, def, live) {
   live = live || {};
   const current = live.current || null;
@@ -1366,7 +1431,8 @@ const MRP_REGISTRAR_MACHINE = {
   note: 'Fully tap-observable — the registration layer shared by MSRP and MVRP. '
     + 'Wire AttributeEvents map New→rNew, JoinIn→rJoinIn, JoinMt→rJoinMt, '
     + 'Lv→rLv, LeaveAll→rLA. In / Mt are logged but do not move the registrar. '
-    + 'Use the event step-through below to walk it event by event.',
+    + 'Scrub the timeline to walk it event by event; click a transition to list '
+    + 'the events that drove it.',
 };
 
 const MRP_APPLICANT_MACHINE = {
@@ -1814,12 +1880,14 @@ function sessionView(app, id) {
   const tabNotesBtn = h('button', { id: 'tab-notes', class: 'tab', type: 'button', onclick: () => setTab('notes') }, 'Notes');
   const tabMarkersBtn = h('button', { id: 'tab-markers', class: 'tab', type: 'button', onclick: () => setTab('markers') }, 'Markers');
   const tabInfoBtn = h('button', { id: 'tab-info', class: 'tab', type: 'button', onclick: () => setTab('info') }, 'Info');
-  const tabMachinesBtn = h('button', { id: 'tab-machines', class: 'tab', type: 'button', onclick: () => setTab('machines') }, 'Machines');
-  const tabTopologyBtn = h('button', { id: 'tab-topology', class: 'tab', type: 'button', onclick: () => setTab('topology') }, 'Topology');
+  /* "Network Status" = the device graph + every reconstructed state machine
+     (network-wide and per-device), grouped by protocol. The old separate
+     "Machines" tab is folded into here. */
+  const tabTopologyBtn = h('button', { id: 'tab-topology', class: 'tab', type: 'button', onclick: () => setTab('topology') }, 'Network Status');
   const inspBody = h('div', { class: 'insp-body' });
   const eventsPanel = h('div', { class: 'events-panel' }, tableHead, tableBody, tableEmpty);
   const inspectorPanel = h('div', { class: 'inspector-panel' },
-    h('div', { class: 'tabs' }, tabInspBtn, tabStateBtn, tabNotesBtn, tabMarkersBtn, tabInfoBtn, tabMachinesBtn, tabTopologyBtn),
+    h('div', { class: 'tabs' }, tabInspBtn, tabStateBtn, tabNotesBtn, tabMarkersBtn, tabInfoBtn, tabTopologyBtn),
     inspBody,
   );
   const mainSplit = h('div', { class: 'session-main' }, eventsPanel, inspectorPanel);
@@ -2147,10 +2215,6 @@ function sessionView(app, id) {
   /* ────────── selection ────────── */
 
   let inspNeedsEvent = -1;   /* selected-but-not-yet-loaded event index */
-  let machineSinkIdx = 0;    /* Machines tab: selected milan_sinks[] instance */
-  let machineEntityIdx = 0;  /* Machines tab: selected entities[] instance */
-  let machineMrpIdx = -1;    /* Machines tab: selected mrp[] instance (-1 → last) */
-  let mrpPlayTimer = 0;      /* Machines tab: MRP step-through auto-play interval */
   let topoSelMac = null;     /* Topology tab: selected device MAC (lowercased) */
   let topoSelPort = null;    /* Topology tab: focused gPTP port id, or null */
   let topoModel = null;      /* last-built model, reused for selection-only updates */
@@ -2175,7 +2239,6 @@ function sessionView(app, id) {
        tracks the timeline bar). Notes/Info are left untouched. */
     if (opts.inspect && S.tab !== 'inspect') setTab('inspect');
     else if (S.tab === 'inspect') renderInspector();
-    else if (S.tab === 'machines') reRenderKeepingScroll(renderMachinesTab);
     else if (S.tab === 'topology') syncTopologyToCursor();
   }
 
@@ -2187,7 +2250,6 @@ function sessionView(app, id) {
     tlSchedule();
     /* back to the final observed state on the time-tracking views */
     if (S.tab === 'inspect') renderInspector();
-    else if (S.tab === 'machines') reRenderKeepingScroll(renderMachinesTab);
     else if (S.tab === 'topology') syncTopologyToCursor();
   }
 
@@ -2244,15 +2306,12 @@ function sessionView(app, id) {
   function setTab(t) {
     /* auto-save on leave — but never while a conflict awaits a decision */
     if (S.tab === 'notes' && t !== 'notes' && N.dirty && !N.conflict) saveNotes();
-    /* stop the MRP step-through auto-play when leaving the Machines tab */
-    if (S.tab === 'machines' && t !== 'machines') { clearInterval(mrpPlayTimer); mrpPlayTimer = 0; }
     S.tab = t;
     tabInspBtn.classList.toggle('active', t === 'inspect');
     tabStateBtn.classList.toggle('active', t === 'state');
     tabNotesBtn.classList.toggle('active', t === 'notes');
     tabMarkersBtn.classList.toggle('active', t === 'markers');
     tabInfoBtn.classList.toggle('active', t === 'info');
-    tabMachinesBtn.classList.toggle('active', t === 'machines');
     tabTopologyBtn.classList.toggle('active', t === 'topology');
     setPresenceView(t === 'notes' ? 'session/' + id + ':notes' : 'session/' + id);
     renderInspector();
@@ -2292,7 +2351,6 @@ function sessionView(app, id) {
     if (S.tab === 'notes') { renderNotesTab(); return; }
     if (S.tab === 'markers') { renderMarkersTab(); return; }
     if (S.tab === 'info') { renderInfoTab(); return; }
-    if (S.tab === 'machines') { renderMachinesTab(); return; }
     if (S.tab === 'topology') { renderTopologyTab(); return; }
     if (S.lonePacket > 0) {
       const holder = h('div', { class: 'insp-scroll' });
@@ -2489,7 +2547,6 @@ function sessionView(app, id) {
         if (en.entity_id && en.name) S.entityNames.set(en.entity_id, en.name);
       }
       if (S.tab === 'state') renderStateTab();
-      else if (S.tab === 'machines') renderMachinesTab();
       else if (S.tab === 'topology') renderTopologyTab();
     } catch (err) {
       if (!S.closed) toast('state: ' + err.message, 'error');
@@ -2757,15 +2814,6 @@ function sessionView(app, id) {
     return (idStr && S.entityNames.get(idStr)) || idStr || '?';
   }
 
-  function sinkOptLabel(s) {
-    const l = entText(s.listener_entity) + ':'
-      + (s.listener_unique_id != null ? s.listener_unique_id : '?');
-    const t = s.bound_talker
-      ? entText(s.bound_talker) + ':' + (s.bound_talker_unique_id != null ? s.bound_talker_unique_id : '?')
-      : '—';
-    return l + ' → ' + t + '  [' + (s.state || '?') + ']';
-  }
-
   /* ── time-indexed overlays ────────────────────────────────────────────
      "current" must mean current AS OF where the timeline cursor sits — the
      selected event's timestamp — not merely the end of capture. curTs() is
@@ -2860,7 +2908,7 @@ function sessionView(app, id) {
   function machineCard(def, live, liveNote) {
     const scroll = h('div', { class: 'sm-scroll' });
     drawMachine(scroll, def, live);
-    return h('div', { class: 'machine-card' },
+    const card = h('div', { class: 'machine-card' },
       h('div', { class: 'machine-head' },
         h('span', { class: 'machine-title' }, def.title),
         h('span', { class: 'machine-sub dim small' }, def.subtitle)),
@@ -2868,6 +2916,7 @@ function sessionView(app, id) {
       liveNote ? h('div', { class: 'machine-note mn-live' }, liveNote) : null,
       def.note ? h('div', { class: 'machine-note' }, def.note) : null,
     );
+    return foldableCard(card, def.svgId || def.title);
   }
 
   function machineLegend() {
@@ -2879,226 +2928,6 @@ function sessionView(app, id) {
       leg('a-dim', 'not reached'),
       h('span', { class: 'mleg' }, h('span', { class: 'mleg-sw a-ref' }),
         'reference — not tap-observable'));
-  }
-
-  function renderMachinesTab() {
-    if (!S.stateData) {
-      inspBody.replaceChildren(placeholder(S.stateLoading
-        ? 'Loading state…' : 'State not loaded yet.'));
-      if (!S.stateLoading) loadState();
-      return;
-    }
-    clearInterval(mrpPlayTimer); mrpPlayTimer = 0;   /* stop any running step-through */
-    const st = S.stateData;
-    const sinks = st.milan_sinks || [];
-    const entities = st.entities || [];
-    const mrp = st.mrp || [];
-    if (machineSinkIdx >= sinks.length) machineSinkIdx = 0;
-    if (machineEntityIdx >= entities.length) machineEntityIdx = 0;
-    if (mrp.length) {
-      if (machineMrpIdx < 0 || machineMrpIdx >= mrp.length) machineMrpIdx = mrp.length - 1;
-    } else machineMrpIdx = 0;
-
-    const sinkSel = h('select', {
-      id: 'machine-sink', class: 'input input-sm', disabled: !sinks.length,
-      title: 'Milan listener sink instance (drives the ACMP sink + discovery overlay)',
-    }, sinks.length
-      ? sinks.map((s, i) => h('option', { value: String(i) }, sinkOptLabel(s)))
-      : [h('option', { value: '0' }, 'no listener sinks observed')]);
-    sinkSel.value = String(machineSinkIdx);
-    sinkSel.addEventListener('change', () => {
-      machineSinkIdx = parseInt(sinkSel.value, 10) || 0;
-      renderMachinesTab();
-    });
-
-    const entSel = h('select', {
-      id: 'machine-entity', class: 'input input-sm', disabled: !entities.length,
-      title: 'ADP entity instance (drives the entity-lifecycle overlay)',
-    }, entities.length
-      ? entities.map((e, i) => h('option', { value: String(i) },
-          (e.name || e.entity_id || ('entity ' + i))))
-      : [h('option', { value: '0' }, 'no entities observed')]);
-    entSel.value = String(machineEntityIdx);
-    entSel.addEventListener('change', () => {
-      machineEntityIdx = parseInt(entSel.value, 10) || 0;
-      renderMachinesTab();
-    });
-
-    const sink = sinks[machineSinkIdx] || null;
-    const entity = entities[machineEntityIdx] || null;
-
-    /* ── MRP registration layer (802.1Q): attribute selector, live Registrar,
-       Applicant reference, and the observed-event step-through ── */
-    const mrpEntry = mrp[machineMrpIdx] || null;
-    const mrpAccent = mrpEntry ? (PROTO_COLORS[mrpEntry.proto] || PROTO_COLORS.MSRP) : PROTO_COLORS.MSRP;
-    const log = mrpEntry ? (mrpEntry.log || []) : [];
-    /* default the step to the timeline cursor: the log step at/before the
-       selected event, or the last (final) row when nothing is selected. */
-    let stepIdx = log.length
-      ? (S.selected >= 0 ? Math.max(0, mrpStepForTs(log, curTs())) : log.length - 1)
-      : -1;
-
-    const mrpAttrSel = h('select', {
-      id: 'machine-mrp-attr', class: 'input input-sm', disabled: !mrp.length,
-      title: 'MRP attribute (protocol · attribute · source) — drives the Registrar overlay and the event step-through',
-    }, mrp.length
-      ? mrp.map((m, i) => h('option', { value: String(i) }, mrpAttrLabel(m)))
-      : [h('option', { value: '0' }, 'no MRP attributes observed')]);
-    mrpAttrSel.value = String(machineMrpIdx);
-    mrpAttrSel.addEventListener('change', () => {
-      machineMrpIdx = parseInt(mrpAttrSel.value, 10) || 0;
-      renderMachinesTab();
-    });
-
-    const regDef = Object.assign({}, MRP_REGISTRAR_MACHINE, { accent: mrpAccent });
-    const mrpRegScroll = h('div', { class: 'sm-scroll' });
-    const mrpTrigger = h('div', { id: 'mrp-trigger', class: 'mrp-trigger' },
-      log.length ? '' : 'passive tap — the registrar walks as each observed event arrives');
-    const mrpStepCur = h('span', { class: 'mrp-step-cur' });
-    const mrpPlayBtn = h('button', {
-      id: 'mrp-play', class: 'btn btn-sm', type: 'button',
-      disabled: log.length < 2, 'aria-pressed': 'false',
-      title: 'auto-step through the observed events (~2/s)',
-    }, '▸ Play');
-    const mrpLog = h('div', {
-      id: 'mrp-log', class: 'mrp-log', role: 'listbox',
-      tabindex: log.length ? '0' : '-1', 'aria-label': 'MRP observed event stream',
-    });
-
-    function drawReg(idx) {
-      mrpRegScroll.replaceChildren();
-      const live = mrpEntry ? mrpLiveAt(mrpEntry, idx)
-        : { current: null, history: [], visited: new Set() };
-      drawMachine(mrpRegScroll, regDef, live);
-    }
-
-    function setStep(idx, opts) {
-      opts = opts || {};
-      if (!log.length) { drawReg(-1); return; }
-      idx = Math.max(0, Math.min(log.length - 1, idx));
-      stepIdx = idx;
-      drawReg(idx);
-      const e = log[idx];
-      const mapped = MRP_EV_MAP[e.event];
-      mrpTrigger.textContent = 'triggered by ' + e.event
-        + (mapped ? ' (' + mapped + ')' : '') + '  →  registrar ' + e.state;
-      mrpTrigger.classList.remove('flash');
-      void mrpTrigger.offsetWidth;          /* reflow to restart the flash keyframes */
-      if (!opts.noFlash) mrpTrigger.classList.add('flash');
-      mrpStepCur.replaceChildren('step #' + idx + ' / ' + (log.length - 1) + '  ',
-        mrpStateBadge(e.state, true));
-      mrpLog.querySelectorAll('.mrp-log-row').forEach((r) => {
-        const on = Number(r.dataset.idx) === idx;
-        r.classList.toggle('sel', on);
-        r.tabIndex = on ? 0 : -1;
-        if (on && opts.scroll) r.scrollIntoView({ block: 'nearest' });
-        if (on && opts.focus) r.focus();
-      });
-    }
-
-    function stopPlay() {
-      if (mrpPlayTimer) { clearInterval(mrpPlayTimer); mrpPlayTimer = 0; }
-      mrpPlayBtn.textContent = '▸ Play';
-      mrpPlayBtn.setAttribute('aria-pressed', 'false');
-    }
-    function togglePlay() {
-      if (mrpPlayTimer) { stopPlay(); return; }
-      if (log.length < 2) return;
-      if (stepIdx >= log.length - 1) setStep(0);   /* restart from the top at the end */
-      mrpPlayBtn.textContent = '❚❚ Pause';
-      mrpPlayBtn.setAttribute('aria-pressed', 'true');
-      mrpPlayTimer = setInterval(() => {
-        if (stepIdx >= log.length - 1) { stopPlay(); return; }
-        setStep(stepIdx + 1, { scroll: true });
-      }, 500);
-    }
-    mrpPlayBtn.addEventListener('click', togglePlay);
-
-    mrpLog.addEventListener('keydown', (ev) => {
-      if (!log.length) return;
-      const k = ev.key;
-      if (k === 'ArrowDown' || k === 'ArrowRight') { ev.preventDefault(); stopPlay(); setStep(stepIdx + 1, { scroll: true, focus: true }); }
-      else if (k === 'ArrowUp' || k === 'ArrowLeft') { ev.preventDefault(); stopPlay(); setStep(stepIdx - 1, { scroll: true, focus: true }); }
-      else if (k === 'Home') { ev.preventDefault(); stopPlay(); setStep(0, { scroll: true, focus: true }); }
-      else if (k === 'End') { ev.preventDefault(); stopPlay(); setStep(log.length - 1, { scroll: true, focus: true }); }
-    });
-
-    if (!log.length) {
-      mrpLog.appendChild(h('div', { class: 'empty small' }, 'No MRP attributes observed yet.'));
-    } else {
-      log.forEach((e, i) => {
-        const row = h('div', {
-          class: 'mrp-log-row', role: 'option', tabindex: '-1', dataset: { idx: String(i) },
-        },
-          h('span', { class: 'mlr-i mono' }, '#' + i),
-          h('span', { class: 'mlr-ts mono' }, fmtTime(e.ts)),
-          h('span', { class: 'mlr-ev' }, e.event),
-          h('span', { class: 'mlr-arrow' }, '→'),
-          mrpStateBadge(e.state, true));
-        row.addEventListener('click', () => { stopPlay(); setStep(i, { focus: true }); });
-        mrpLog.appendChild(row);
-      });
-    }
-
-    const applCard = machineCard(MRP_APPLICANT_MACHINE, {}, null);
-    applCard.appendChild(mrpApplicantEvents());
-
-    const mrpSection = h('div', { class: 'mrp-section' },
-      h('div', { class: 'machine-section-head' },
-        h('span', { class: 'msh-title' }, 'MRP registration layer'),
-        h('span', { class: 'dim small' },
-          'IEEE 802.1Q — the registration state machines beneath MSRP & MVRP')),
-      h('div', { class: 'machine-controls' },
-        h('label', { for: 'machine-mrp-attr' }, 'MRP attribute'), mrpAttrSel),
-      h('div', { class: 'machine-card' },
-        h('div', { class: 'machine-head' },
-          h('span', { class: 'machine-title' }, regDef.title),
-          h('span', { class: 'machine-sub dim small' }, regDef.subtitle)),
-        mrpTrigger,
-        mrpRegScroll,
-        mrpEntry ? null : h('div', { class: 'machine-note mn-live' },
-          'No MRP attributes observed yet — showing the reference registrar.'),
-        h('div', { class: 'machine-note' }, regDef.note)),
-      applCard,
-      h('div', { class: 'machine-card mrp-step' },
-        h('div', { class: 'mrp-step-head' },
-          h('span', { class: 'machine-title' }, 'Event step-through'),
-          mrpStepCur,
-          h('span', { class: 'toolbar-spacer' }),
-          mrpPlayBtn),
-        h('div', { class: 'mrp-step-hint dim small' },
-          'Click an event (or focus the list and use ↑ / ↓) to walk the Registrar to that '
-          + 'state — the triggering event is named at each step.'),
-        mrpLog),
-    );
-
-    inspBody.replaceChildren(h('div', { class: 'insp-scroll' },
-      h('div', { class: 'state-actions' },
-        h('span', { class: 'dim small' }, 'Milan v1.2 protocol state machines — overlay '),
-        asOfBadge(),
-        h('span', { class: 'toolbar-spacer' })),
-      h('div', { class: 'machine-controls' },
-        h('label', { for: 'machine-sink' }, 'ACMP sink / discovery'), sinkSel,
-        h('label', { for: 'machine-entity' }, 'ADP entity'), entSel),
-      machineLegend(),
-      machineCard(ACMP_MACHINE, sinkLive(sink),
-        sink ? null : 'No Milan listener sinks observed yet — showing the reference diagram.'),
-      machineCard(ADP_ENTITY_MACHINE, entityLive(entity),
-        entity ? null : 'No ADP entities observed yet — showing the reference diagram.'),
-      machineCard(ADP_ADVERTISE_MACHINE, advertiseLive(entity), null),
-      machineCard(ADP_DISCOVERY_MACHINE, discoveryLive(sink),
-        sink ? null : 'No bound sink selected — talker discovery is tracked per sink.'),
-      mrpSection,
-    ));
-
-    /* initial overlay: default to the last (current live) event, no flash */
-    if (log.length) {
-      setStep(stepIdx, { noFlash: true });
-      const selRow = mrpLog.querySelector('.mrp-log-row.sel');
-      if (selRow) selRow.scrollIntoView({ block: 'nearest' });
-    } else {
-      drawReg(-1);
-    }
   }
 
   /* ────────── inspector: topology tab ──────────
@@ -3414,7 +3243,7 @@ function sessionView(app, id) {
     /* role and asCapable are reconstructed transitions → shown as of the cursor */
     const roleT = portFieldAt(p, GPTP_ROLE_ONLY, p.role || 'UNKNOWN');
     const ascapT = portFieldAt(p, GPTP_ASCAP_ONLY, p.as_capable || 'UNKNOWN');
-    return h('div', { class: 'machine-card' + (topoSelPort === p.port ? ' is-focus' : '') },
+    const card = h('div', { class: 'machine-card' + (topoSelPort === p.port ? ' is-focus' : '') },
       h('div', { class: 'machine-head' },
         h('span', { class: 'machine-title' }, def.title),
         h('span', { class: 'machine-sub dim small' }, def.subtitle)),
@@ -3431,6 +3260,7 @@ function sessionView(app, id) {
       historyBlock(p.history),
       h('div', { class: 'machine-note' }, def.note),
     );
+    return foldableCard(card, 'topo-port:' + (p.port || idx));
   }
 
   /* ── network-wide state machines (always shown, independent of selection) ──
@@ -3476,7 +3306,7 @@ function sessionView(app, id) {
           class: 'sbadge sm ' + (sy === 'HEALTHY' ? 'st-good' : sy === 'LOST' ? 'st-warn' : 'st-neutral'),
         }, 'gPTP ' + sy) : null);
     });
-    return h('div', { class: 'machine-card' },
+    const card = h('div', { class: 'machine-card' },
       h('div', { class: 'machine-head' },
         h('span', { class: 'machine-title' }, 'MSRP — SR domain & reservations'),
         h('span', { class: 'machine-sub dim small' }, 'IEEE 802.1Q SRP — stream reservation domain (network-wide)')),
@@ -3486,12 +3316,13 @@ function sessionView(app, id) {
         : h('div', { class: 'dim small mt4' }, 'no reservations observed'),
       h('div', { class: 'machine-note' },
         'The talker→listener paths are the graph’s stream edges above; this is their SRP domain and per-stream status (as of the cursor).'));
+    return foldableCard(card, 'net-msrp');
   }
 
   function topoNetworkPanel() {
     const st = S.stateData || {};
     const gptp = st.gptp || {};
-    const cards = [];
+    const gptpCards = [], msrpCards = [], maapCards = [];
 
     (gptp.domains || []).forEach((d, i) => {
       const def = Object.assign({}, GPTP_DOMAIN_MACHINE,
@@ -3510,10 +3341,10 @@ function sessionView(app, id) {
           ? h('span', { class: 'kv' }, h('span', { class: 'kv-k' }, 'prio1 '), h('span', { class: 'mono' }, String(gm.priority1))) : null,
         d.bmca ? h('span', { class: 'sbadge st-neutral sm' }, 'BMCA ' + d.bmca) : null);
       card.insertBefore(info, card.querySelector('.sm-scroll'));
-      cards.push(card);
+      gptpCards.push(card);
     });
 
-    if ((st.domains || []).length || (st.reservations || []).length) cards.push(msrpDomainCard());
+    if ((st.domains || []).length || (st.reservations || []).length) msrpCards.push(msrpDomainCard());
 
     (st.maap || []).forEach((m, i) => {
       const def = Object.assign({}, MAAP_MACHINE,
@@ -3524,8 +3355,14 @@ function sessionView(app, id) {
       if (head) head.appendChild(h('span', { class: 'machine-sub dim small' },
         m.claimant + ' · ', h('span', { class: 'mono' },
           m.range_start + (end && end !== m.range_start ? ' … ' + end : '') + ' (×' + m.count + ')')));
-      cards.push(card);
+      maapCards.push(card);
     });
+
+    const groups = [
+      protoGroup('gPTP (802.1AS) — domain', 'GPTP', gptpCards, 'net-gptp'),
+      protoGroup('MSRP (802.1Q SRP)', 'MSRP', msrpCards, 'net-msrp-grp'),
+      protoGroup('MAAP (1722)', 'MAAP', maapCards, 'net-maap'),
+    ].filter(Boolean);
 
     return h('div', { class: 'topo-net' },
       h('div', { class: 'topo-net-head' },
@@ -3533,23 +3370,30 @@ function sessionView(app, id) {
         h('span', { class: 'dim small' }, 'fabric-wide — always shown, independent of the selected device '),
         h('span', { class: 'toolbar-spacer' }), asOfBadge()),
       machineLegend(),
-      cards.length ? cards
+      groups.length ? groups
         : h('div', { class: 'empty small' }, 'No network-wide protocol state observed yet (gPTP / MSRP / MAAP).'));
   }
 
   /* every reconstructed machine for one device, bound to its live data */
   function topoMachinesPanel(n) {
-    const cards = [];
+    const adp = [], gptpC = [], acmp = [], mrp = [];
     if (n.entity) {
       const def = Object.assign({}, ADP_ENTITY_MACHINE, { svgId: 'topo-machine-entity' });
-      cards.push(machineCard(def, entityLive(n.entity), null));
+      adp.push(machineCard(def, entityLive(n.entity), null));
+      /* the internal PAAD advertise machine (reference, tinted while available) */
+      adp.push(machineCard(Object.assign({}, ADP_ADVERTISE_MACHINE, { svgId: 'topo-machine-adp-advertise' }),
+        advertiseLive(n.entity), null));
     }
     let ports = n.ports || [];
     if (topoSelPort) ports = ports.filter((p) => p.port === topoSelPort);   /* focus one */
-    ports.forEach((p, i) => cards.push(topoPortCard(p, topoSelPort ? 0 : i)));
+    ports.forEach((p, i) => gptpC.push(topoPortCard(p, topoSelPort ? 0 : i)));
     (n.milanSinks || []).forEach((s, i) => {
       const def = Object.assign({}, ACMP_MACHINE, { svgId: i === 0 ? 'topo-machine-acmp' : 'topo-machine-acmp-' + i });
-      cards.push(machineCard(def, sinkLive(s), null));
+      acmp.push(machineCard(def, sinkLive(s), null));
+      /* talker-discovery machine for this bound sink */
+      adp.push(machineCard(Object.assign({}, ADP_DISCOVERY_MACHINE,
+        { svgId: i === 0 ? 'topo-machine-adp-discovery' : 'topo-machine-adp-discovery-' + i }),
+        discoveryLive(s), null));
     });
     (n.mrp || []).forEach((m, i) => {
       const def = Object.assign({}, MRP_REGISTRAR_MACHINE, {
@@ -3562,8 +3406,21 @@ function sessionView(app, id) {
       const head = card.querySelector('.machine-head');
       if (head) head.appendChild(h('span', { class: 'machine-sub dim small' },
         mrpAttrLabel(m) + ' — registrar ', mrpStateBadge(liveAt.current || 'MT', true)));
-      cards.push(card);
+      mrp.push(card);
     });
+    /* the 802.1Q MRP Applicant reference (sender-internal, not tap-observable) */
+    if ((n.mrp || []).length) {
+      const applCard = machineCard(Object.assign({}, MRP_APPLICANT_MACHINE, { svgId: 'topo-machine-mrp-applicant' }), {}, null);
+      const body = applCard.querySelector('.sm-scroll');
+      if (body) body.after(mrpApplicantEvents());
+      mrp.push(applCard);
+    }
+    const groups = [
+      protoGroup('ATDECC — ADP', 'ADP', adp, 'dev-adp'),
+      protoGroup('gPTP (802.1AS)', 'GPTP', gptpC, 'dev-gptp'),
+      protoGroup('ATDECC — ACMP', 'ACMP', acmp, 'dev-acmp'),
+      protoGroup('MRP (802.1Q)', 'MSRP', mrp, 'dev-mrp'),
+    ].filter(Boolean);
     const head = h('div', { class: 'topo-panel-head' },
       h('span', { class: 'machine-title' }, n.label),
       h('span', { class: 'mono dim small' }, n.synthetic ? 'inferred bridge' : n.mac),
@@ -3571,7 +3428,7 @@ function sessionView(app, id) {
       topoSelPort ? h('span', { class: 'sbadge st-neutral sm' }, 'port ' + topoSelPort) : null,
       h('span', { class: 'toolbar-spacer' }), asOfBadge());
     return h('div', { class: 'topo-panel' }, head, machineLegend(),
-      cards.length ? cards : h('div', { class: 'empty small' },
+      groups.length ? groups : h('div', { class: 'empty small' },
         'No reconstructed state machines for this device'
         + (n.packets ? ' (' + fmtInt(n.packets) + ' packets observed).' : '.')));
   }
@@ -4950,7 +4807,6 @@ function sessionView(app, id) {
       stopPolling();
       clearTimeout(searchTimer);
       clearInterval(pingTimer);
-      clearInterval(mrpPlayTimer);
       if (ws) { try { ws.close(); } catch (err) { /* ignore */ } ws = null; }
       document.removeEventListener('keydown', onKey);
       resizeObs.disconnect();
