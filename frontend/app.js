@@ -1267,6 +1267,69 @@ const GPTP_MD_PDELAY_REQ_MACHINE = {
     + 'The MDPdelayResp (responder) and MDSyncSend states are shown as badges above.',
 };
 
+/* ── network-wide state machines (not tied to one device) ──────────────────
+   Always shown in the Topology view. Node ids match the /state values so the
+   live overlay is a plain string match. */
+
+/* gPTP domain grandmaster lifecycle (per domain) — which clock is GM, per the
+   BMCA. current = gptp.domains[].state; sync health rides alongside as a badge. */
+const GPTP_DOMAIN_MACHINE = {
+  title: 'gPTP Domain — Grandmaster',
+  subtitle: '802.1AS — BMCA grandmaster lifecycle (network-wide, per domain)',
+  svgId: 'topo-net-gptp-domain', accent: PROTO_COLORS.GPTP,
+  view: { x: 0, y: 0, w: 700, h: 200 }, minW: 520,
+  states: [
+    { id: 'NO_GM', x: 40, y: 78, sub: 'no announce' },
+    { id: 'GM_PRESENT', x: 290, y: 78, sub: 'GM elected' },
+    { id: 'GM_TIMED_OUT', x: 540, y: 78, sub: 'announce lapsed' },
+  ],
+  edges: [
+    { from: 'NO_GM', to: 'GM_PRESENT', fromSide: 'R', fromT: 0.5, toSide: 'L', toT: 0.5,
+      label: ['Announce', '(BMCA)'], labelAt: { x: 242, y: 62 } },
+    { from: 'GM_PRESENT', to: 'GM_PRESENT', label: ['Announce', '(BMCA reselect · GM change)'] },
+    { from: 'GM_PRESENT', to: 'GM_TIMED_OUT', fromSide: 'R', fromT: 0.5, toSide: 'L', toT: 0.5,
+      label: 'announce timeout', labelAt: { x: 492, y: 62 } },
+    { from: 'GM_TIMED_OUT', to: 'GM_PRESENT', fromSide: 'B', fromT: 0.5, toSide: 'B', toT: 0.62,
+      via: [{ x: 616, y: 162 }, { x: 366, y: 162 }], label: 'Announce', labelAt: { x: 470, y: 168 } },
+  ],
+  note: 'Network-wide per gPTP domain — not a single device. current = the '
+    + 'domain grandmaster lifecycle; several GM changes in a burst are faithful '
+    + 'BMCA reselection on the wire. Sync health (HEALTHY/LOST) is the badge above.',
+};
+
+/* MAAP multicast address-range acquisition (per claimant) — IEEE 1722 Annex B.
+   current = maap[].state. */
+const MAAP_MACHINE = {
+  title: 'MAAP Address Claim',
+  subtitle: 'IEEE 1722 Annex B — multicast address-range acquisition per claimant',
+  svgId: 'topo-net-maap', accent: PROTO_COLORS.MAAP,
+  view: { x: 0, y: 0, w: 720, h: 300 }, minW: 560,
+  states: [
+    { id: 'UNKNOWN', x: 40, y: 132, sub: 'not seen' },
+    { id: 'PROBING', x: 270, y: 132, sub: 'claiming' },
+    { id: 'ACQUIRED', x: 500, y: 132, sub: 'owns range' },
+    { id: 'DEFENDING', x: 500, y: 30, sub: 'contested' },
+    { id: 'LOST', x: 270, y: 236, sub: 'abandoned' },
+  ],
+  edges: [
+    { from: 'UNKNOWN', to: 'PROBING', fromSide: 'R', fromT: 0.5, toSide: 'L', toT: 0.5,
+      label: 'MAAP_PROBE', labelAt: { x: 212, y: 148 } },
+    { from: 'PROBING', to: 'ACQUIRED', fromSide: 'R', fromT: 0.5, toSide: 'L', toT: 0.5,
+      label: 'MAAP_ANNOUNCE', labelAt: { x: 442, y: 148 } },
+    { from: 'ACQUIRED', to: 'DEFENDING', fromSide: 'T', fromT: 0.42, toSide: 'B', toT: 0.42,
+      label: 'MAAP_DEFEND', labelAt: { x: 604, y: 100 } },
+    { from: 'DEFENDING', to: 'ACQUIRED', fromSide: 'B', fromT: 0.72, toSide: 'T', toT: 0.72,
+      label: 're-announce', labelAt: { x: 512, y: 100 } },
+    { from: 'ACQUIRED', to: 'LOST', fromSide: 'B', fromT: 0.4, toSide: 'R', toT: 0.5,
+      curve: 24, label: ['range', 'abandoned'], labelAt: { x: 430, y: 214 } },
+    { from: 'LOST', to: 'PROBING', fromSide: 'T', fromT: 0.5, toSide: 'B', toT: 0.5,
+      label: 're-probe', labelAt: { x: 300, y: 192 } },
+  ],
+  note: 'Reconstructed per claimant (a talker MAC) from observed MAAP_PROBE / '
+    + 'ANNOUNCE / DEFEND — how stream destination multicast addresses are claimed '
+    + 'and defended across the network.',
+};
+
 /* ── MRP machines (IEEE 802.1Q) — the registration layer beneath MSRP/MVRP ──
    The Registrar (Table 10-4) is fully tap-observable, so it carries a live
    overlay; the Applicant (Table 10-3) is sender-internal, drawn as a reference
@@ -2095,6 +2158,7 @@ function sessionView(app, id) {
   let topoPanelHost = null;  /* the panel container swapped on selection */
   let topoGraphEl = null;    /* the graph container, reused to redraw edges on scrub */
   let topoAsofSlot = null;   /* header "as of …" chip, refreshed on scrub */
+  let topoNetHost = null;    /* always-on network-machines section, re-timed on scrub */
 
   function selectEvent(i, opts) {
     opts = opts || {};
@@ -3369,6 +3433,110 @@ function sessionView(app, id) {
     );
   }
 
+  /* ── network-wide state machines (always shown, independent of selection) ──
+     gPTP domain grandmaster, MSRP SR domain, MAAP address claims. Time-indexed
+     to the cursor like everything else. */
+  const GPTP_GM_STATES = new Set(['NO_GM', 'GM_PRESENT', 'GM_TIMED_OUT']);
+  function domainGmLive(d, T) {
+    /* domain history mixes GM-lifecycle and SYNC_* transitions; keep only GM */
+    const hist = (d.history || []).filter((t) =>
+      GPTP_GM_STATES.has(t.to) || GPTP_GM_STATES.has(t.from));
+    const r = liveAtN(hist, d.state || 'NO_GM', T == null ? curTs() : T);
+    r.fullHistory = hist;
+    return r;
+  }
+  function domainSyncAt(d, T) {
+    const rel = (d.history || []).filter((t) =>
+      String(t.to).indexOf('SYNC_') === 0 || String(t.from).indexOf('SYNC_') === 0);
+    const cur = liveAtN(rel, 'SYNC_' + (d.sync || 'UNKNOWN'), T == null ? curTs() : T).current
+      || ('SYNC_' + (d.sync || 'UNKNOWN'));
+    return String(cur).replace('SYNC_', '');
+  }
+  function maapLive(m, T) {
+    const r = liveAtN(m.history, m.state || 'UNKNOWN', T == null ? curTs() : T);
+    r.fullHistory = m.history || [];
+    return r;
+  }
+
+  function msrpDomainCard() {
+    const st = S.stateData || {};
+    const srDomains = st.domains || [];
+    const reservations = st.reservations || [];
+    const domChips = srDomains.map((d) => h('span', { class: 'sbadge st-neutral sm' },
+      'SR class ' + d.class_id + ' · prio ' + d.priority + ' · VID ' + d.vid));
+    const resRows = reservations.map((r) => {
+      const rstate = liveAtN(r.history, r.state, curTs()).current || r.state || 'PENDING';
+      const sy = r.gptp_sync;
+      return h('div', { class: 'topo-res-row' },
+        stateBadge(rstate, true),
+        h('span', { class: 'mono small' }, shortStream(r.stream_id) || String(r.stream_id || '')),
+        h('span', { class: 'dim small' }, (r.listeners || []).length + ' listener'
+          + ((r.listeners || []).length === 1 ? '' : 's')),
+        sy ? h('span', {
+          class: 'sbadge sm ' + (sy === 'HEALTHY' ? 'st-good' : sy === 'LOST' ? 'st-warn' : 'st-neutral'),
+        }, 'gPTP ' + sy) : null);
+    });
+    return h('div', { class: 'machine-card' },
+      h('div', { class: 'machine-head' },
+        h('span', { class: 'machine-title' }, 'MSRP — SR domain & reservations'),
+        h('span', { class: 'machine-sub dim small' }, 'IEEE 802.1Q SRP — stream reservation domain (network-wide)')),
+      domChips.length ? h('div', { class: 'topo-badges' }, domChips)
+        : h('div', { class: 'dim small' }, 'no SR class domain declared'),
+      resRows.length ? h('div', { class: 'topo-res-list' }, resRows)
+        : h('div', { class: 'dim small mt4' }, 'no reservations observed'),
+      h('div', { class: 'machine-note' },
+        'The talker→listener paths are the graph’s stream edges above; this is their SRP domain and per-stream status (as of the cursor).'));
+  }
+
+  function topoNetworkPanel() {
+    const st = S.stateData || {};
+    const gptp = st.gptp || {};
+    const cards = [];
+
+    (gptp.domains || []).forEach((d, i) => {
+      const def = Object.assign({}, GPTP_DOMAIN_MACHINE,
+        { svgId: i === 0 ? 'topo-net-gptp-domain' : 'topo-net-gptp-domain-' + i });
+      const card = machineCard(def, domainGmLive(d), null);
+      const gm = d.grandmaster || {};
+      const sy = domainSyncAt(d) || 'UNKNOWN';
+      const info = h('div', { class: 'topo-badges' },
+        h('span', {
+          class: 'sbadge sm ' + (sy === 'HEALTHY' ? 'st-good' : sy === 'LOST' ? 'st-warn' : 'st-neutral'),
+        }, 'sync ' + sy),
+        h('span', { class: 'kv' }, h('span', { class: 'kv-k' }, 'domain '), h('span', { class: 'mono' }, String(d.domain))),
+        h('span', { class: 'kv' }, h('span', { class: 'kv-k' }, 'GM '),
+          h('span', { class: 'mono' }, gm.name || gm.clock_identity || '—')),
+        (gm.priority1 != null && gm.clock_identity)
+          ? h('span', { class: 'kv' }, h('span', { class: 'kv-k' }, 'prio1 '), h('span', { class: 'mono' }, String(gm.priority1))) : null,
+        d.bmca ? h('span', { class: 'sbadge st-neutral sm' }, 'BMCA ' + d.bmca) : null);
+      card.insertBefore(info, card.querySelector('.sm-scroll'));
+      cards.push(card);
+    });
+
+    if ((st.domains || []).length || (st.reservations || []).length) cards.push(msrpDomainCard());
+
+    (st.maap || []).forEach((m, i) => {
+      const def = Object.assign({}, MAAP_MACHINE,
+        { svgId: i === 0 ? 'topo-net-maap' : 'topo-net-maap-' + i });
+      const card = machineCard(def, maapLive(m), null);
+      const head = card.querySelector('.machine-head');
+      const end = (typeof m.count === 'number' && m.count > 0) ? macAdd(m.range_start, m.count - 1) : null;
+      if (head) head.appendChild(h('span', { class: 'machine-sub dim small' },
+        m.claimant + ' · ', h('span', { class: 'mono' },
+          m.range_start + (end && end !== m.range_start ? ' … ' + end : '') + ' (×' + m.count + ')')));
+      cards.push(card);
+    });
+
+    return h('div', { class: 'topo-net' },
+      h('div', { class: 'topo-net-head' },
+        h('span', { class: 'machine-title' }, 'Network state machines'),
+        h('span', { class: 'dim small' }, 'fabric-wide — always shown, independent of the selected device '),
+        h('span', { class: 'toolbar-spacer' }), asOfBadge()),
+      machineLegend(),
+      cards.length ? cards
+        : h('div', { class: 'empty small' }, 'No network-wide protocol state observed yet (gPTP / MSRP / MAAP).'));
+  }
+
   /* every reconstructed machine for one device, bound to its live data */
   function topoMachinesPanel(n) {
     const cards = [];
@@ -3541,6 +3709,8 @@ function sessionView(app, id) {
     topoGraphEl = graph;
     const panelHost = h('div', { class: 'topo-panel-host' }, topoMachinesPanel(selNode));
     topoPanelHost = panelHost;
+    const netHost = h('div', { class: 'topo-net-host' }, topoNetworkPanel());
+    topoNetHost = netHost;
 
     const asofSlot = h('span', { class: 'topo-asof-slot' }, asOfBadge());
     topoAsofSlot = asofSlot;
@@ -3550,6 +3720,7 @@ function sessionView(app, id) {
           'Observed network topology — click a device or port for its state machines; links show streams/sync flowing '),
         asofSlot,
         h('span', { class: 'toolbar-spacer' })),
+      netHost,
       topoLegend(),
       h('div', { class: 'sm-scroll topo-scroll' }, graph),
       panelHost,
@@ -3567,6 +3738,7 @@ function sessionView(app, id) {
     if (!topoModel || !topoNodeEls || !topoGraphEl || !topoPanelHost
         || !S.stateData || !topoModel.devices.has(topoSelMac)) { renderTopologyTab(); return; }
     if (topoAsofSlot) topoAsofSlot.replaceChildren(asOfBadge());
+    if (topoNetHost) topoNetHost.replaceChildren(topoNetworkPanel());
     drawTopoEdges(topoGraphEl, topoNodeEls, buildTopoEdges(topoModel));
     topoPanelHost.replaceChildren(topoMachinesPanel(topoModel.devices.get(topoSelMac)));
   }

@@ -213,6 +213,14 @@ def run_tests(page, url):
                       + page.locator("#topo-machine-acmp").count()
                       + page.locator("#topo-machine-mrp-registrar").count())
     assert machines_shown >= 1, "selected device shows no state machines"
+    # The network-wide state machines (MSRP SR domain / MAAP / gPTP domain) are
+    # always shown, independent of which device is selected.
+    net = page.locator(".topo-net")
+    expect(net).to_be_visible()
+    net_machines = (net.get_by_text("SR domain & reservations").count()
+                    + page.locator("#topo-net-maap").count()
+                    + page.locator("#topo-net-gptp-domain").count())
+    assert net_machines >= 1, "network section shows no network-wide machines"
     # Clicking a different device switches the panel to its machines.
     first_sel = page.locator(".topo-node.is-selected").get_attribute("data-mac")
     other = None

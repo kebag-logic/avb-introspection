@@ -19,7 +19,10 @@ moment; with nothing selected they show the final observed state. Click any
 **transition** in a diagram to list the event(s) that drove it, each linking
 straight to its triggering packet. The Topology view maps the observed
 devices — click an endstation or a port to see all of its state machines, timed
-to the cursor, in one place.
+to the cursor, in one place — and always shows the **network-wide** state
+machines that belong to no single device (the gPTP domain grandmaster/BMCA
+lifecycle, the MSRP SR reservation domain, and MAAP multicast-address claims)
+above the graph.
 
 The tool is an *observer* — it decodes and correlates traffic; generating
 traffic is [TSN-GEN]'s job. See [REQUIREMENTS.md](REQUIREMENTS.md) for the

@@ -1620,6 +1620,36 @@ input.marker-label { width: 100%; }
 /* per-device machines panel below the graph */
 .topo-panel-host { display: block; }
 .topo-panel { margin-top: 4px; }
+
+/* always-on network state-machine section (above the graph) */
+.topo-net-host { display: block; }
+.topo-net {
+  margin: 2px 0 12px;
+  padding: 10px 12px 12px;
+  border: 1px solid color-mix(in srgb, var(--c-gptp, #2fa3a8) 35%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--c-gptp, #2fa3a8) 6%, transparent);
+}
+.topo-net-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.topo-net-head .machine-title { font-size: 13px; }
+.topo-res-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+.topo-res-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
 .mt4 { margin-top: 4px; }
 .topo-panel-head {
   display: flex;
