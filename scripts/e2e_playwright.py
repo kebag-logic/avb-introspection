@@ -113,6 +113,27 @@ def run_tests(page, url):
         f"timeline did not pan to the selected event " \
         f"(t1 stayed at {t1_after} <= {t1_zoomed})"
 
+    # Double-click on a marker must NOT fit (it selects); only empty space fits.
+    cbox = canvas.bounding_box()
+    canvas.hover(position={"x": 300, "y": 30})
+    page.mouse.wheel(0, -500)  # zoom in so a fit would visibly change t1
+    page.wait_for_timeout(150)
+    t1_zoomed2 = float(canvas.get_attribute("data-t1"))
+    marker = page.evaluate(
+        """() => { const cv=document.querySelector('.session-view canvas');
+             const r=cv.getBoundingClientRect();
+             for (let ly=8; ly<170; ly+=13) for (let lx=90; lx<r.width-10; lx+=3){
+               cv.dispatchEvent(new PointerEvent('pointermove',
+                 {bubbles:true,clientX:r.left+lx,clientY:r.top+ly}));
+               if (cv.style.cursor==='pointer') return {x:r.left+lx,y:r.top+ly}; }
+             return null; }""")
+    if marker:  # capture may have a marker in the zoomed window
+        page.mouse.dblclick(marker["x"], marker["y"])
+        page.wait_for_timeout(200)
+        t1_dbl = float(canvas.get_attribute("data-t1"))
+        assert abs(t1_dbl - t1_zoomed2) < 1e-6, \
+            f"double-click on a marker fit the view (t1 {t1_zoomed2} -> {t1_dbl})"
+
     # ---- packet inspector -------------------------------------------------
     rows.first.click()
     expect(page.get_by_text("ethernet_mac_frame").first).to_be_visible(

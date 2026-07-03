@@ -2926,7 +2926,13 @@ function sessionView(app, id) {
   tlCanvas.addEventListener('pointermove', tlPointerMove);
   tlCanvas.addEventListener('pointerup', tlPointerUp);
   tlCanvas.addEventListener('pointerleave', tlLeave);
-  tlCanvas.addEventListener('dblclick', () => tlFit(true));
+  tlCanvas.addEventListener('dblclick', (ev) => {
+    /* Fit only on empty timeline space — a double-click on a marker keeps the
+       selection (from pointerup) instead of zooming the whole view out. */
+    const rect = TL.canvas.getBoundingClientRect();
+    if (tlHitTest(ev.clientX - rect.left, ev.clientY - rect.top) >= 0) return;
+    tlFit(true);
+  });
 
   const resizeObs = new ResizeObserver(() => { if (!S.closed) tlResize(); });
   resizeObs.observe(tlWrap);
