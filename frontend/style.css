@@ -1314,6 +1314,26 @@ input.marker-label { width: 100%; }
   border-left: 2px solid color-mix(in srgb, var(--st-warn) 55%, transparent);
   padding-left: 8px;
 }
+/* "as of pkt N · time" chip — tells the user which timeline moment the
+   diagrams' current-state overlay reflects */
+.asof {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--c-acmp, #d6539b) 45%, var(--border));
+  background: color-mix(in srgb, var(--c-acmp, #d6539b) 12%, transparent);
+  color: var(--text);
+  white-space: nowrap;
+}
+.asof .mono { font-size: 11px; opacity: 0.95; }
+.asof.dim {
+  border-color: var(--border);
+  background: transparent;
+  color: var(--muted);
+}
 
 .sm-scroll { overflow-x: auto; overflow-y: hidden; }
 

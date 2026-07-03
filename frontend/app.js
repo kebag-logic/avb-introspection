@@ -1312,7 +1312,8 @@ function mrpLiveAt(entry, idx) {
     prev = stt;
   }
   const current = (end >= 0 && log[end]) ? log[end].state
-    : ((entry && entry.registrar) || null);
+    : (log.length ? 'MT'                       /* cursor precedes the first event */
+                  : ((entry && entry.registrar) || null));
   if (current) visited.add(current);
   return { current, history, visited };
 }
@@ -1995,6 +1996,8 @@ function sessionView(app, id) {
   let topoModel = null;      /* last-built model, reused for selection-only updates */
   let topoNodeEls = null;    /* Map(mac -> node element) from the last full render */
   let topoPanelHost = null;  /* the panel container swapped on selection */
+  let topoGraphEl = null;    /* the graph container, reused to redraw edges on scrub */
+  let topoAsofSlot = null;   /* header "as of …" chip, refreshed on scrub */
 
   function selectEvent(i, opts) {
     opts = opts || {};
@@ -2005,12 +2008,14 @@ function sessionView(app, id) {
     if (e) tlCenterOn(e.ts); /* keep the selection visible in the timeline */
     tlSchedule();
     if (opts.scroll) scrollToSelected();
-    /* Selecting a packet keeps whatever tab is open on the right; it only
-       refreshes the Packet inspector when that is the active view (or when an
-       explicit navigation asked for it). Other tabs (State, Notes, Machines,
-       Info) are left untouched so editing / step-through state is preserved. */
+    /* Selecting a packet keeps whatever tab is open on the right. The Packet
+       inspector re-renders for the new packet; the Machines and Topology views
+       re-overlay their diagrams to the cursor's moment (their "current" state
+       tracks the timeline bar). Notes/Info are left untouched. */
     if (opts.inspect && S.tab !== 'inspect') setTab('inspect');
     else if (S.tab === 'inspect') renderInspector();
+    else if (S.tab === 'machines') renderMachinesTab();
+    else if (S.tab === 'topology') syncTopologyToCursor();
   }
 
   function clearSelection() {
@@ -2019,7 +2024,10 @@ function sessionView(app, id) {
     S.lonePacket = 0;
     scheduleTable();
     tlSchedule();
+    /* back to the final observed state on the time-tracking views */
     if (S.tab === 'inspect') renderInspector();
+    else if (S.tab === 'machines') renderMachinesTab();
+    else if (S.tab === 'topology') syncTopologyToCursor();
   }
 
   function jumpToPacket(n) {
@@ -2584,34 +2592,91 @@ function sessionView(app, id) {
     return l + ' → ' + t + '  [' + (s.state || '?') + ']';
   }
 
-  /* live overlay: current = the reconstructed state, visited = every state that
-     appears as a from/to in the instance history (+ current) */
-  function histVisited(hist, current) {
-    const v = new Set();
-    for (const t of (hist || [])) { v.add(t.from); v.add(t.to); }
-    if (current) v.add(current);
-    return v;
+  /* ── time-indexed overlays ────────────────────────────────────────────
+     "current" must mean current AS OF where the timeline cursor sits — the
+     selected event's timestamp — not merely the end of capture. curTs() is
+     that cursor time (Infinity = nothing selected = final observed state);
+     liveAtN walks an object's transition history up to it. Faithful to the
+     observed transitions only — never fabricates a state. */
+  function curTs() {
+    if (S.selected >= 0 && S.events[S.selected]
+        && typeof S.events[S.selected].ts === 'number') return S.events[S.selected].ts;
+    return Infinity;
   }
-  function sinkLive(sink) {
+  /* a chip telling the user which moment every diagram below reflects */
+  function asOfBadge() {
+    if (S.selected >= 0 && S.events[S.selected]) {
+      const e = S.events[S.selected];
+      return h('span', { class: 'asof',
+        title: 'the diagrams show each machine’s state at this point on the timeline — move the cursor to scrub' },
+        'as of ', h('span', { class: 'mono' },
+          (e.n > 0 ? 'pkt ' + e.n + ' · ' : '') + fmtTime(e.ts)));
+    }
+    return h('span', { class: 'asof dim',
+      title: 'no event selected — showing the final observed state; click a packet or the timeline to scrub through time' },
+      'final observed state');
+  }
+
+  /* state in effect at cursor time T: current = last transition with ts≤T
+     (or the pre-first-transition state), visited = states seen up to T,
+     history = the transitions walked so far. */
+  function liveAtN(history, finalState, T) {
+    const hist = Array.isArray(history) ? history : [];
+    if (T == null) T = Infinity;
+    const visited = new Set();
+    const walked = [];
+    let current = null, initial = null;
+    for (const t of hist) {
+      if (initial == null) initial = t.from;
+      if (typeof t.ts === 'number' && t.ts > T) break;   /* history is time-ordered */
+      visited.add(t.from); visited.add(t.to);
+      walked.push({ from: t.from, to: t.to, why: t.why, ts: t.ts, n: t.n });
+      current = t.to;
+    }
+    if (current == null) current = hist.length ? (initial != null ? initial : finalState) : finalState;
+    if (current) visited.add(current);
+    return { current, history: walked, visited };
+  }
+  function sinkLive(sink, T) {
     if (!sink) return { current: null, history: [], visited: new Set() };
-    return { current: sink.state || null, history: sink.history || [],
-      visited: histVisited(sink.history, sink.state) };
+    return liveAtN(sink.history, sink.state || null, T == null ? curTs() : T);
   }
-  function entityLive(en) {
+  function entityLive(en, T) {
     if (!en) return { current: null, history: [], visited: new Set() };
-    return { current: en.state || null, history: en.history || [],
-      visited: histVisited(en.history, en.state) };
+    return liveAtN(en.history, en.state || null, T == null ? curTs() : T);
   }
-  function advertiseLive(en) {
-    const cur = (en && en.state === 'AVAILABLE') ? 'WAITING' : null;
+  function advertiseLive(en, T) {
+    const cur = entityLive(en, T).current === 'AVAILABLE' ? 'WAITING' : null;
     return { current: cur, history: [], visited: new Set(cur ? [cur] : []) };
   }
+  /* talker_discovered is a live-only field (no transition history), so it is
+     not time-indexed — shown as the final observed value. */
   function discoveryLive(sink) {
     const cur = (sink && sink.talker_discovered && sink.talker_discovered !== 'N/A')
       ? sink.talker_discovered : null;
     const v = new Set();
     if (cur) { v.add(cur); if (cur === 'TK_DISCOVERED') v.add('TK_NOT_DISCOVERED'); }
     return { current: cur, history: [], visited: v };
+  }
+  /* gPTP port role / asCapable at T. The port history interleaves both fields.
+     Classify each transition by its DESTINATION (role-only vs asCapable-only
+     values); UNKNOWN is shared by both, so for a to=UNKNOWN transition fall back
+     to the source to decide which machine it belongs to. Then walk to T. */
+  const GPTP_ROLE_ONLY = new Set(['MASTER', 'SLAVE', 'PASSIVE', 'DISABLED']);
+  const GPTP_ASCAP_ONLY = new Set(['AS_CAPABLE', 'NOT_AS_CAPABLE']);
+  function portFieldAt(p, onlySet, finalVal, T) {
+    const rel = (Array.isArray(p.history) ? p.history : [])
+      .filter((t) => onlySet.has(t.to) || (t.to === 'UNKNOWN' && onlySet.has(t.from)));
+    return liveAtN(rel, finalVal, T == null ? curTs() : T).current || finalVal;
+  }
+  /* log step at/before cursor time T (-1 = cursor precedes the first event) */
+  function mrpStepForTs(log, T) {
+    let idx = -1;
+    for (let j = 0; j < (log ? log.length : 0); j++) {
+      if (typeof log[j].ts === 'number' && log[j].ts > T) break;
+      idx = j;
+    }
+    return idx;
   }
 
   function machineCard(def, live, liveNote) {
@@ -2656,9 +2721,6 @@ function sessionView(app, id) {
       if (machineMrpIdx < 0 || machineMrpIdx >= mrp.length) machineMrpIdx = mrp.length - 1;
     } else machineMrpIdx = 0;
 
-    const refreshBtn = h('button', { class: 'btn btn-sm', type: 'button' }, 'Refresh');
-    refreshBtn.addEventListener('click', () => { S.stateData = null; renderMachinesTab(); });
-
     const sinkSel = h('select', {
       id: 'machine-sink', class: 'input input-sm', disabled: !sinks.length,
       title: 'Milan listener sink instance (drives the ACMP sink + discovery overlay)',
@@ -2692,7 +2754,11 @@ function sessionView(app, id) {
     const mrpEntry = mrp[machineMrpIdx] || null;
     const mrpAccent = mrpEntry ? (PROTO_COLORS[mrpEntry.proto] || PROTO_COLORS.MSRP) : PROTO_COLORS.MSRP;
     const log = mrpEntry ? (mrpEntry.log || []) : [];
-    let stepIdx = log.length ? log.length - 1 : -1;   /* default = last (live) row */
+    /* default the step to the timeline cursor: the log step at/before the
+       selected event, or the last (final) row when nothing is selected. */
+    let stepIdx = log.length
+      ? (S.selected >= 0 ? Math.max(0, mrpStepForTs(log, curTs())) : log.length - 1)
+      : -1;
 
     const mrpAttrSel = h('select', {
       id: 'machine-mrp-attr', class: 'input input-sm', disabled: !mrp.length,
@@ -2830,9 +2896,9 @@ function sessionView(app, id) {
 
     inspBody.replaceChildren(h('div', { class: 'insp-scroll' },
       h('div', { class: 'state-actions' },
-        h('span', { class: 'dim small' }, 'Milan v1.2 protocol state machines — live overlay'),
-        h('span', { class: 'toolbar-spacer' }),
-        refreshBtn),
+        h('span', { class: 'dim small' }, 'Milan v1.2 protocol state machines — overlay '),
+        asOfBadge(),
+        h('span', { class: 'toolbar-spacer' })),
       h('div', { class: 'machine-controls' },
         h('label', { for: 'machine-sink' }, 'ACMP sink / discovery'), sinkSel,
         h('label', { for: 'machine-entity' }, 'ADP entity'), entSel),
@@ -2879,8 +2945,9 @@ function sessionView(app, id) {
   function isZeroId(x) { const s = tnorm(x); return !s || /^0x0+$/.test(s); }
   function extractHex(s) { return String(s || '').match(/0x[0-9a-fA-F]+/g) || []; }
   function shortStream(sid) {
+    if (isZeroId(sid)) return '';           /* never surface an all-zero stream id */
     const s = String(sid || '');
-    if (!s) return 'stream';
+    if (!s) return '';
     const c = s.lastIndexOf(':');
     return c >= 0 ? '…' + s.slice(c) : s;
   }
@@ -3011,10 +3078,12 @@ function sessionView(app, id) {
     return { devices, entityToMac, entityToMacs, bridgesByDomain };
   }
 
-  /* Edges: gPTP sync (master→slave per domain, chained through path-trace
-     bridges when present) + streams (ACMP connections and MSRP reservations,
-     talker→listener). Deduped by kind|from|to; endpoints must be known nodes. */
-  function buildTopoEdges(model) {
+  /* Edges as of cursor time T (default = the selected event): gPTP sync
+     (master→slave per domain, chained through path-trace bridges) + streams
+     (ACMP connections and MSRP reservations, talker→listener). Deduped by
+     kind|from|to|label; endpoints must be known nodes. */
+  function buildTopoEdges(model, T) {
+    if (T == null) T = curTs();
     const st = S.stateData || {};
     const gptp = st.gptp || {};
     const edges = [];
@@ -3043,37 +3112,40 @@ function sessionView(app, id) {
       const gmIds = new Set();
       if (dom.grandmaster && dom.grandmaster.clock_identity) gmIds.add(tnorm(dom.grandmaster.clock_identity));
       if (dom.sync_gm) gmIds.add(tnorm(dom.sync_gm));
+      /* roles as of the cursor: the sync source is whichever port is master
+         at T, so the arrow follows BMCA handovers as you scrub. */
       const slaves = [], masters = [];
       for (const p of gptp.ports || []) {
         if (p.domain !== domNum) continue;
-        if (p.role === 'SLAVE') slaves.push(tnorm(p.src_mac));
-        else if (p.role === 'MASTER') masters.push(tnorm(p.src_mac));
+        const roleT = portFieldAt(p, GPTP_ROLE_ONLY, p.role || 'UNKNOWN', T);
+        if (roleT === 'SLAVE') slaves.push(tnorm(p.src_mac));
+        else if (roleT === 'MASTER') masters.push(tnorm(p.src_mac));
       }
       let source = null;
-      if (gmIds.size) {
+      if (masters.length === 1) source = masters[0];
+      else if (gmIds.size) {
         for (const n of model.devices.values()) {
           for (const clk of n.clockIds) { if (gmIds.has(clk)) { source = tnorm(n.mac); break; } }
           if (source) break;
         }
       }
-      if (!source && masters.length === 1) source = masters[0];
       if (!source) continue;
       const label = 'gPTP domain ' + domNum;
       let head = source;
       for (const br of model.bridgesByDomain.get(domNum) || []) { add('sync', head, br, label); head = tnorm(br); }
       for (const s of slaves) if (s !== head) add('sync', head, s, label);
     }
-    /* streams: only draw a link where a stream is actually flowing — an
-       ESTABLISHED reservation to a READY listener, or a CONNECTED ACMP pair.
-       FAILED/PENDING/DISCONNECTED entries must not read as live links. */
+    /* streams: only where a stream is actually flowing AS OF the cursor — a
+       reservation ESTABLISHED at T (to a ready listener), or an ACMP pair
+       CONNECTED at T. Torn-down/failed/pending links never draw. */
     for (const c of st.connections || []) {
-      if (c.state !== 'CONNECTED') continue;
+      if (liveAtN(c.history, c.state, T).current !== 'CONNECTED') continue;
       if (isZeroId(c.talker_entity) || isZeroId(c.listener_entity)) continue;
       add('stream', model.entityToMac.get(tnorm(c.talker_entity)),
         model.entityToMac.get(tnorm(c.listener_entity)), shortStream(c.stream_id));
     }
     for (const r of st.reservations || []) {
-      if (r.state !== 'ESTABLISHED') continue;
+      if (liveAtN(r.history, r.state, T).current !== 'ESTABLISHED') continue;
       for (const l of r.listeners || []) {
         if (l.state !== 'READY' && l.state !== 'READY_FAILED') continue;
         add('stream', r.talker_mac, l.mac, shortStream(r.stream_id));
@@ -3161,16 +3233,21 @@ function sessionView(app, id) {
     const scroll = h('div', { class: 'sm-scroll' });
     drawMachine(scroll, def, live);
     const kv = (k, badge) => h('span', { class: 'kv' }, h('span', { class: 'kv-k' }, k + ' '), badge);
+    /* role and asCapable are reconstructed transitions → shown as of the cursor */
+    const roleT = portFieldAt(p, GPTP_ROLE_ONLY, p.role || 'UNKNOWN');
+    const ascapT = portFieldAt(p, GPTP_ASCAP_ONLY, p.as_capable || 'UNKNOWN');
     return h('div', { class: 'machine-card' + (topoSelPort === p.port ? ' is-focus' : '') },
       h('div', { class: 'machine-head' },
         h('span', { class: 'machine-title' }, def.title),
         h('span', { class: 'machine-sub dim small' }, def.subtitle)),
       h('div', { class: 'topo-badges' },
-        stateBadge(p.role || 'UNKNOWN'),
-        stateBadge(p.as_capable || 'UNKNOWN', true),
+        stateBadge(roleT),
+        stateBadge(ascapT, true),
         (md.pdelay_resp_state && md.pdelay_resp_state !== 'NOT_ENABLED') ? kv('MDPdelayResp', stateBadge(md.pdelay_resp_state, true)) : null,
         (md.sync_send_state && md.sync_send_state !== 'NOT_ENABLED') ? kv('MDSyncSend', stateBadge(md.sync_send_state, true)) : null),
       scroll,
+      h('div', { class: 'machine-note mn-live' },
+        'MDPdelayReq free-runs (~1/s) with no per-cycle history — shown at its final observed position; the port role / asCapable above track the cursor.'),
       (Array.isArray(p.history) && p.history.length)
         ? h('div', { class: 'dim small mt4' }, 'port role / asCapable transitions') : null,
       historyBlock(p.history),
@@ -3198,17 +3275,19 @@ function sessionView(app, id) {
         accent: PROTO_COLORS[m.proto] || PROTO_COLORS.MSRP,
       });
       const log = m.log || [];
-      const card = machineCard(def, mrpLiveAt(m, log.length ? log.length - 1 : -1), null);
+      const liveAt = mrpLiveAt(m, mrpStepForTs(log, curTs()));   /* as of the cursor */
+      const card = machineCard(def, liveAt, null);
       const head = card.querySelector('.machine-head');
       if (head) head.appendChild(h('span', { class: 'machine-sub dim small' },
-        mrpAttrLabel(m) + ' — registrar ', mrpStateBadge(m.registrar, true)));
+        mrpAttrLabel(m) + ' — registrar ', mrpStateBadge(liveAt.current || 'MT', true)));
       cards.push(card);
     });
     const head = h('div', { class: 'topo-panel-head' },
       h('span', { class: 'machine-title' }, n.label),
       h('span', { class: 'mono dim small' }, n.synthetic ? 'inferred bridge' : n.mac),
       topoRoleBadges(n),
-      topoSelPort ? h('span', { class: 'sbadge st-neutral sm' }, 'port ' + topoSelPort) : null);
+      topoSelPort ? h('span', { class: 'sbadge st-neutral sm' }, 'port ' + topoSelPort) : null,
+      h('span', { class: 'toolbar-spacer' }), asOfBadge());
     return h('div', { class: 'topo-panel' }, head, machineLegend(),
       cards.length ? cards : h('div', { class: 'empty small' },
         'No reconstructed state machines for this device'
@@ -3235,6 +3314,8 @@ function sessionView(app, id) {
   /* measure the laid-out cards, size the graph, then draw the edge SVG behind
      them (pointer-events:none so the cards stay clickable) */
   function drawTopoEdges(graph, nodeEls, edges) {
+    const prior = graph.querySelector('svg.topo-svg');   /* re-callable on scrub */
+    if (prior) prior.remove();
     const boxes = new Map();
     let maxR = 0, maxB = 0;
     for (const [mac, el] of nodeEls) {
@@ -3299,14 +3380,12 @@ function sessionView(app, id) {
     const model = buildTopologyModel();
     topoModel = model;
     const nodes = [...model.devices.values()];
-    const refreshBtn = h('button', { class: 'btn btn-sm', type: 'button' }, 'Refresh');
-    refreshBtn.addEventListener('click', () => { S.stateData = null; S.infoData = null; renderTopologyTab(); });
 
     if (!nodes.length) {
       inspBody.replaceChildren(h('div', { class: 'insp-scroll' },
         h('div', { class: 'state-actions' },
           h('span', { class: 'dim small' }, 'Observed network topology'),
-          h('span', { class: 'toolbar-spacer' }), refreshBtn),
+          h('span', { class: 'toolbar-spacer' })),
         h('div', { class: 'empty' }, 'No devices observed yet.')));
       return;
     }
@@ -3345,21 +3424,36 @@ function sessionView(app, id) {
       nodeEls.set(n.mac, el);
     }
     topoNodeEls = nodeEls;
+    topoGraphEl = graph;
     const panelHost = h('div', { class: 'topo-panel-host' }, topoMachinesPanel(selNode));
     topoPanelHost = panelHost;
 
+    const asofSlot = h('span', { class: 'topo-asof-slot' }, asOfBadge());
+    topoAsofSlot = asofSlot;
     inspBody.replaceChildren(h('div', { class: 'insp-scroll' },
       h('div', { class: 'state-actions' },
         h('span', { class: 'dim small' },
-          'Observed network topology — click a device card or a port chip for its state machines'),
-        h('span', { class: 'toolbar-spacer' }), refreshBtn),
+          'Observed network topology — click a device or port for its state machines; links show streams/sync flowing '),
+        asofSlot,
+        h('span', { class: 'toolbar-spacer' })),
       topoLegend(),
       h('div', { class: 'sm-scroll topo-scroll' }, graph),
       panelHost,
     ));
 
-    /* cards are in the live DOM now — measure them, then draw the edges */
+    /* cards are in the live DOM now — measure them, then draw the edges at the
+       cursor's moment (positions are fixed; edges/overlays track the timeline) */
     drawTopoEdges(graph, nodeEls, buildTopoEdges(model));
+  }
+
+  /* selection unchanged, but the timeline cursor moved: keep the node layout,
+     just redraw the time-varying edges and the selected device's machines. */
+  function syncTopologyToCursor() {
+    if (!topoModel || !topoNodeEls || !topoGraphEl || !topoPanelHost
+        || !S.stateData || !topoModel.devices.has(topoSelMac)) { renderTopologyTab(); return; }
+    if (topoAsofSlot) topoAsofSlot.replaceChildren(asOfBadge());
+    drawTopoEdges(topoGraphEl, topoNodeEls, buildTopoEdges(topoModel));
+    topoPanelHost.replaceChildren(topoMachinesPanel(topoModel.devices.get(topoSelMac)));
   }
 
   /* ────────── inspector: notes tab ────────── */

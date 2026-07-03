@@ -227,6 +227,36 @@ def run_tests(page, url):
         expect(page.locator(f'.topo-node[data-mac="{other}"].is-selected')
                ).to_have_count(1)
 
+    # The diagrams overlay the state AS OF the timeline cursor, not just the
+    # end of capture — there is no manual "Refresh" and an "as of …" chip
+    # tracks the selection. (An event is already selected from the timeline
+    # test above, so selecting a different one must re-time the overlay.)
+    assert page.get_by_role("button", name="Refresh").count() == 0, \
+        "topology should not expose a Refresh button"
+    expect(page.locator(".asof").first).to_be_visible()
+    # select the last event, then the first — the "as of" chip must differ.
+    page.locator(".etable-body").evaluate("el => { el.scrollTop = el.scrollHeight; }")
+    page.wait_for_timeout(200)
+    page.locator(".erow").last.click()
+    page.wait_for_timeout(300)
+    asof_late = page.locator(".asof").first.inner_text()
+    page.locator(".etable-body").evaluate("el => { el.scrollTop = 0; }")
+    page.wait_for_timeout(200)
+    page.locator(".erow").first.click()
+    page.wait_for_timeout(300)
+    asof_early = page.locator(".asof").first.inner_text()
+    assert "as of" in asof_early.lower(), \
+        f"selecting a packet should re-time the topology overlay, got {asof_early!r}"
+    assert asof_early != asof_late, \
+        "topology overlay did not re-time when the timeline selection changed"
+
+    # Machines tab likewise tracks the cursor and has no Refresh button.
+    page.locator("#tab-machines").click()
+    page.wait_for_timeout(300)
+    assert page.get_by_role("button", name="Refresh").count() == 0, \
+        "Machines tab should not expose a Refresh button"
+    expect(page.locator(".asof").first).to_be_visible()
+
     # ---- investigation notes (FE-9/BE-9) -----------------------------------
     page.locator("#tab-notes").click()
     notes = page.locator("#notes-editor")
