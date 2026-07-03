@@ -257,6 +257,35 @@ def run_tests(page, url):
         "Machines tab should not expose a Refresh button"
     expect(page.locator(".asof").first).to_be_visible()
 
+    # Changing the selected packet must NOT yank the inspector scroll position.
+    scroller = page.locator(".insp-scroll")
+    maxsc = scroller.evaluate("el => el.scrollHeight - el.clientHeight")
+    if maxsc > 120:
+        scroller.evaluate("(el, y) => { el.scrollTop = y; }", 150)
+        page.wait_for_timeout(120)
+        page.locator(".erow").nth(3).click()
+        page.wait_for_timeout(350)
+        after = page.locator(".insp-scroll").evaluate("el => el.scrollTop")
+        assert abs(after - 150) <= 8, \
+            f"inspector scroll jumped on packet change (150 -> {after})"
+
+    # Clicking a transition lists the event(s) that triggered it, with a
+    # jump-to-packet link.
+    clickable = page.locator(".sm-elabel.is-clickable")
+    if clickable.count():
+        clickable.first.scroll_into_view_if_needed()
+        clickable.first.click(force=True)
+        page.wait_for_timeout(200)
+        pop = page.locator(".smpop")
+        expect(pop).to_be_visible()
+        assert pop.locator(".smpop-row").count() >= 1, \
+            "transition popover shows no triggering events"
+        assert pop.locator(".smpop-pkt").count() >= 1, \
+            "transition popover has no jump-to-packet link"
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(100)
+        expect(page.locator(".smpop")).to_have_count(0)
+
     # ---- investigation notes (FE-9/BE-9) -----------------------------------
     page.locator("#tab-notes").click()
     notes = page.locator("#notes-editor")

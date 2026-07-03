@@ -843,6 +843,54 @@ function kvList(pairs) {
 const SM_NW = 152;    /* node width (user units) */
 const SM_NH = 46;     /* node height */
 let smUid = 0;        /* per-diagram id prefix so <marker> ids stay unique */
+/* hooks set once by sessionView so drawMachine's edge-trigger popover can
+   format times and jump to a triggering packet (both live in that closure) */
+let smFmtTime = (t) => String(t);
+let smJumpToPacket = null;
+let smEdgePop = null;   /* the single open edge-trigger popover, if any */
+
+function closeEdgePop() {
+  if (smEdgePop) { smEdgePop.remove(); smEdgePop = null; }
+  document.removeEventListener('mousedown', onEdgePopAway, true);
+  document.removeEventListener('keydown', onEdgePopKey, true);
+}
+function onEdgePopAway(ev) { if (smEdgePop && !smEdgePop.contains(ev.target)) closeEdgePop(); }
+function onEdgePopKey(ev) { if (ev.key === 'Escape') closeEdgePop(); }
+
+/* popover listing every observed event that drove one transition (from→to),
+   each with its time and a jump-to-packet link */
+function showEdgeTriggers(ev, edge, triggers, def) {
+  closeEdgePop();
+  const rows = triggers.map((t) => h('div', { class: 'smpop-row' },
+    h('span', { class: 'mono smpop-ts' }, smFmtTime(t.ts)),
+    h('span', { class: 'smpop-why', title: t.why || '' }, t.why || (def && def.title) || ''),
+    (typeof t.n === 'number' && t.n > 0 && smJumpToPacket)
+      ? h('button', {
+          class: 'linklike mono smpop-pkt', type: 'button',
+          onclick: () => { const n = t.n; closeEdgePop(); smJumpToPacket(n); },
+        }, 'pkt ' + t.n)
+      : null));
+  const pop = h('div', { class: 'smpop', role: 'dialog' },
+    h('div', { class: 'smpop-head' },
+      h('span', { class: 'smpop-title' }, String(edge.from) + ' → ' + String(edge.to)),
+      h('span', { class: 'smpop-count dim' },
+        triggers.length + (triggers.length === 1 ? ' event' : ' events'))),
+    triggers.length ? h('div', { class: 'smpop-rows' }, rows)
+      : h('div', { class: 'smpop-empty dim small' }, 'not observed yet'));
+  document.body.appendChild(pop);
+  smEdgePop = pop;
+  const r = pop.getBoundingClientRect(), pad = 8;
+  const cx = ev && ev.clientX ? ev.clientX : 60, cy = ev && ev.clientY ? ev.clientY : 60;
+  let x = cx + 12, y = cy + 8;
+  if (x + r.width + pad > window.innerWidth) x = window.innerWidth - r.width - pad;
+  if (y + r.height + pad > window.innerHeight) y = cy - r.height - 8;
+  pop.style.left = Math.max(pad, x) + 'px';
+  pop.style.top = Math.max(pad, y) + 'px';
+  setTimeout(() => {
+    document.addEventListener('mousedown', onEdgePopAway, true);
+    document.addEventListener('keydown', onEdgePopKey, true);
+  }, 0);
+}
 
 function drawMachine(container, def, live) {
   live = live || {};
@@ -851,6 +899,15 @@ function drawMachine(container, def, live) {
   const hist = Array.isArray(live.history) ? live.history : [];
   const recent = hist.length ? hist[hist.length - 1] : null;
   const histEdges = new Set(hist.map((t) => String(t.from) + '>' + String(t.to)));
+  /* every observed transition (not just up to the cursor), grouped per edge, so
+     clicking a transition lists the event(s) that triggered it. */
+  const fullHist = Array.isArray(live.fullHistory) ? live.fullHistory : hist;
+  const edgeTriggers = new Map();
+  for (const t of fullHist) {
+    const k = String(t.from) + '>' + String(t.to);
+    if (!edgeTriggers.has(k)) edgeTriggers.set(k, []);
+    edgeTriggers.get(k).push(t);
+  }
   const accent = def.accent || '#6ab0f3';
   const uid = 'sm' + (smUid++);
   const mkDim = uid + '-adim';
@@ -959,11 +1016,13 @@ function drawMachine(container, def, live) {
     const pf = pathFor(e);
     if (!pf) continue;
     const st = edgeState(e);
-    gEdges.appendChild(svg('path', {
-      class: 'sm-edge ' + st, d: pf.d,
+    const triggers = edgeTriggers.get(String(e.from) + '>' + String(e.to)) || [];
+    const el = svg('path', {
+      class: 'sm-edge ' + st + (triggers.length ? ' is-clickable' : ''), d: pf.d,
       'marker-end': 'url(#' + (st === 'is-dim' ? mkDim : mkAcc) + ')',
-    }));
-    paths.push({ e, pf, st });
+    });
+    gEdges.appendChild(el);
+    paths.push({ e, pf, st, el, triggers });
   }
 
   /* nodes */
@@ -995,14 +1054,37 @@ function drawMachine(container, def, live) {
     for (const l of lines) maxLen = Math.max(maxLen, l.length);
     const w = maxLen * charW + 9, hgt = lines.length * lineH + 3;
     const lx = p.pf.lbl.x, ly = p.pf.lbl.y;
-    gLabels.appendChild(svg('rect', {
-      class: 'sm-elabel-bg', x: lx - w / 2, y: ly - hgt / 2, width: w, height: hgt, rx: 3,
-    }));
-    const text = svg('text', { class: 'sm-elabel ' + p.st, x: lx, y: ly, 'text-anchor': 'middle' });
+    const bg = svg('rect', {
+      class: 'sm-elabel-bg' + (p.triggers.length ? ' is-clickable' : ''),
+      x: lx - w / 2, y: ly - hgt / 2, width: w, height: hgt, rx: 3,
+    });
+    gLabels.appendChild(bg);
+    const text = svg('text', {
+      class: 'sm-elabel ' + p.st + (p.triggers.length ? ' is-clickable' : ''),
+      x: lx, y: ly, 'text-anchor': 'middle',
+    });
     const y0 = ly - (lines.length - 1) * lineH / 2;
     lines.forEach((l, i) => text.appendChild(
       svg('tspan', { x: lx, y: y0 + i * lineH, 'dominant-baseline': 'middle' }, l)));
     gLabels.appendChild(text);
+    if (p.triggers.length) {
+      const onLabel = (ev) => { ev.stopPropagation(); showEdgeTriggers(ev, p.e, p.triggers, def); };
+      bg.addEventListener('click', onLabel);
+      text.addEventListener('click', onLabel);
+    }
+  }
+
+  /* transparent wide hit-strokes on top so a transition is easy to click; a
+     click lists the event(s) that drove it (see showEdgeTriggers). */
+  const gHit = svg('g', { class: 'sm-hit' });
+  svgEl.appendChild(gHit);
+  for (const p of paths) {
+    if (!p.triggers.length) continue;
+    const hit = svg('path', { class: 'sm-hit-path', d: p.pf.d });
+    hit.addEventListener('click', (ev) => { ev.stopPropagation(); showEdgeTriggers(ev, p.e, p.triggers, def); });
+    hit.addEventListener('mouseenter', () => p.el.classList.add('is-hover'));
+    hit.addEventListener('mouseleave', () => p.el.classList.remove('is-hover'));
+    gHit.appendChild(hit);
   }
 
   container.appendChild(svgEl);
@@ -1315,7 +1397,18 @@ function mrpLiveAt(entry, idx) {
     : (log.length ? 'MT'                       /* cursor precedes the first event */
                   : ((entry && entry.registrar) || null));
   if (current) visited.add(current);
-  return { current, history, visited };
+  /* every observed transition across the whole log (with its triggering event
+     and packet), for the click-a-transition popover — independent of `idx`. */
+  const fullHistory = [];
+  let fp = 'MT';
+  for (let j = 0; j < log.length; j++) {
+    const stt = log[j].state;
+    if (!stt) continue;
+    if (fp !== stt || (stt === 'IN' && MRP_EV_MAP[log[j].event] === 'rNew'))
+      fullHistory.push({ from: fp, to: stt, why: log[j].event, ts: log[j].ts, n: log[j].n });
+    fp = stt;
+  }
+  return { current, history, visited, fullHistory };
 }
 
 /* the applicant reference's driving-event legend (rendered under its grid) */
@@ -1499,6 +1592,10 @@ function adminView(app) {
 /* ────────────────────────── session view ────────────────────────── */
 
 function sessionView(app, id) {
+  /* let drawMachine's edge-trigger popover format times and jump to packets
+     (both live in this closure; the hooks are module-level) */
+  smFmtTime = fmtTime;
+  smJumpToPacket = jumpToPacket;
   /* ── mutable view state ── */
   const S = {
     meta: null,
@@ -2014,7 +2111,7 @@ function sessionView(app, id) {
        tracks the timeline bar). Notes/Info are left untouched. */
     if (opts.inspect && S.tab !== 'inspect') setTab('inspect');
     else if (S.tab === 'inspect') renderInspector();
-    else if (S.tab === 'machines') renderMachinesTab();
+    else if (S.tab === 'machines') reRenderKeepingScroll(renderMachinesTab);
     else if (S.tab === 'topology') syncTopologyToCursor();
   }
 
@@ -2026,7 +2123,7 @@ function sessionView(app, id) {
     tlSchedule();
     /* back to the final observed state on the time-tracking views */
     if (S.tab === 'inspect') renderInspector();
-    else if (S.tab === 'machines') renderMachinesTab();
+    else if (S.tab === 'machines') reRenderKeepingScroll(renderMachinesTab);
     else if (S.tab === 'topology') syncTopologyToCursor();
   }
 
@@ -2111,6 +2208,19 @@ function sessionView(app, id) {
     return h('span', { class: 'ent' },
       name ? h('b', null, name + ' ') : null,
       h('span', { class: 'mono' }, idStr));
+  }
+
+  /* Re-render a time-tracking view without yanking the scroll position: the
+     inspector rebuilds its .insp-scroll on every render, and the Machines tab
+     also scrolls the selected MRP step into view — both would jump the panel
+     when you merely change the selected packet. Preserve the scroll offset. */
+  function reRenderKeepingScroll(renderFn) {
+    closeEdgePop();
+    const cur = inspBody.querySelector('.insp-scroll');
+    const top = cur ? cur.scrollTop : 0;
+    renderFn();
+    const next = inspBody.querySelector('.insp-scroll');
+    if (next && top) next.scrollTop = top;
   }
 
   function renderInspector() {
@@ -2639,11 +2749,15 @@ function sessionView(app, id) {
   }
   function sinkLive(sink, T) {
     if (!sink) return { current: null, history: [], visited: new Set() };
-    return liveAtN(sink.history, sink.state || null, T == null ? curTs() : T);
+    const r = liveAtN(sink.history, sink.state || null, T == null ? curTs() : T);
+    r.fullHistory = sink.history || [];   /* all triggers, for edge-click */
+    return r;
   }
   function entityLive(en, T) {
     if (!en) return { current: null, history: [], visited: new Set() };
-    return liveAtN(en.history, en.state || null, T == null ? curTs() : T);
+    const r = liveAtN(en.history, en.state || null, T == null ? curTs() : T);
+    r.fullHistory = en.history || [];
+    return r;
   }
   function advertiseLive(en, T) {
     const cur = entityLive(en, T).current === 'AVAILABLE' ? 'WAITING' : null;
@@ -3449,6 +3563,7 @@ function sessionView(app, id) {
   /* selection unchanged, but the timeline cursor moved: keep the node layout,
      just redraw the time-varying edges and the selected device's machines. */
   function syncTopologyToCursor() {
+    closeEdgePop();
     if (!topoModel || !topoNodeEls || !topoGraphEl || !topoPanelHost
         || !S.stateData || !topoModel.devices.has(topoSelMac)) { renderTopologyTab(); return; }
     if (topoAsofSlot) topoAsofSlot.replaceChildren(asOfBadge());

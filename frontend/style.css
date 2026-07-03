@@ -1378,11 +1378,60 @@ input.marker-label { width: 100%; }
   filter: drop-shadow(0 0 3px color-mix(in srgb, var(--sm-accent) 70%, transparent));
 }
 
+/* clickable transitions: a transparent wide hit-stroke catches the click and a
+   hover cue tells the user the transition is inspectable */
+.sm-hit-path { fill: none; stroke: transparent; stroke-width: 16; cursor: pointer; }
+.sm-edge.is-hover {
+  stroke: var(--sm-accent);
+  stroke-width: 3;
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--sm-accent) 70%, transparent));
+}
+
 /* edge labels + their backing plate */
 .sm-elabel-bg { fill: var(--panel); opacity: 0.94; stroke: var(--border); stroke-width: 0.6; }
+.sm-elabel-bg.is-clickable { cursor: pointer; }
 .sm-elabel { font: 600 9px var(--mono); fill: var(--text-2); letter-spacing: 0.2px; }
 .sm-elabel.is-dim { fill: var(--muted); }
 .sm-elabel.is-recent { fill: var(--sm-accent); }
+.sm-elabel.is-clickable { cursor: pointer; }
+
+/* edge-trigger popover: the list of events that drove a clicked transition */
+.smpop {
+  position: fixed;
+  z-index: 1000;
+  min-width: 200px;
+  max-width: 340px;
+  max-height: 300px;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  padding: 8px 10px;
+  font-size: 12px;
+}
+.smpop-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid var(--border);
+}
+.smpop-title { font-weight: 600; color: var(--text); }
+.smpop-count { font-size: 11px; white-space: nowrap; }
+.smpop-rows { display: flex; flex-direction: column; gap: 3px; }
+.smpop-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: baseline;
+  gap: 8px;
+}
+.smpop-ts { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.smpop-why { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; }
+.smpop-pkt { white-space: nowrap; }
+.smpop-empty { padding: 4px 0; }
 
 /* ── MRP section (802.1Q registration layer + event step-through) ── */
 .machine-section-head {

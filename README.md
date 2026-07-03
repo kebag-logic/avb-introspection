@@ -15,9 +15,11 @@ diagrams** (Milan ACMP listener sink, ADP, 802.1AS media-dependent, and the
 the timeline cursor sits**: select a packet (in the event table or on the
 timeline) and each machine's highlighted *current* state — and, in the
 **Topology** view, the sync/stream links and gPTP port roles — re-time to that
-moment; with nothing selected they show the final observed state. The Topology
-view maps the observed devices — click an endstation or a port to see all of
-its state machines, timed to the cursor, in one place.
+moment; with nothing selected they show the final observed state. Click any
+**transition** in a diagram to list the event(s) that drove it, each linking
+straight to its triggering packet. The Topology view maps the observed
+devices — click an endstation or a port to see all of its state machines, timed
+to the cursor, in one place.
 
 The tool is an *observer* — it decodes and correlates traffic; generating
 traffic is [TSN-GEN]'s job. See [REQUIREMENTS.md](REQUIREMENTS.md) for the
