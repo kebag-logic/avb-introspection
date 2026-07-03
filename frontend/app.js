@@ -1205,13 +1205,44 @@ const MRP_APPLICANT_MACHINE = {
     { id: 'LO', x: 30, y: 318, sub: 'leaving observer' },
     { id: 'LA', x: 606, y: 318, sub: 'leaving active' },
   ],
-  edges: [],
+  edges: [
+    /* tx! — the anxiety countdown: transmitting a declaration moves
+       Very anxious -> Anxious -> Quiet (802.1Q Table 10-3). */
+    { from: 'VN', to: 'AN', label: 'tx!' },
+    { from: 'AN', to: 'QA', label: 'tx!' },
+    { from: 'VP', to: 'AA', label: 'tx!' },
+    { from: 'AA', to: 'QA', label: 'tx!' },
+    { from: 'LA', to: 'VO', label: 'tx!' },
+    /* Join! — declare (observer -> passive/active). */
+    { from: 'VO', to: 'VP', label: 'Join!' },
+    { from: 'AO', to: 'AP', label: 'Join!' },
+    { from: 'QO', to: 'QP', label: 'Join!' },
+    { from: 'LA', to: 'AA', label: 'Join!' },
+    /* Lv! — withdraw (declaring states -> Leaving). */
+    { from: 'VN', to: 'LA', label: 'Lv!' },
+    { from: 'AA', to: 'LA', label: 'Lv!' },
+    { from: 'QA', to: 'LA', label: 'Lv!' },
+    { from: 'AP', to: 'AO', label: 'Lv!' },
+    /* rJoinIn! — someone else registered, so declare less anxiously. */
+    { from: 'VP', to: 'AP', label: 'rJoinIn!' },
+    { from: 'AA', to: 'QA', label: 'rJoinIn!' },
+    { from: 'AO', to: 'QO', label: 'rJoinIn!' },
+    /* rJoinMt! / rMt! — registration went empty -> become active again. */
+    { from: 'QA', to: 'AA', label: 'rJoinMt! / rMt!' },
+    { from: 'QO', to: 'AO', label: 'rJoinMt! / rMt!' },
+    /* rLv! / rLA! / Re-declare! — someone is leaving -> re-declare anxiously. */
+    { from: 'QA', to: 'VP', label: 'rLv! / rLA!' },
+    { from: 'AN', to: 'VN', label: 'rLv! / rLA!' },
+    /* periodic! — periodic re-assertion of a quiet declaration. */
+    { from: 'QP', to: 'AP', label: 'periodic!' },
+  ],
   note: 'Sender-internal — not observable from a passive capture; reconstructed '
     + 'only as the observed event stream (see the Registrar above and the event '
     + 'log). Rows = declaration urgency (very anxious → anxious → quiet → leaving); '
-    + 'columns = activity (observer · passive · new · active). The full 12×15 '
-    + 'transition table is intricate and non-observable, so edges are omitted; the '
-    + 'driving events are listed below.',
+    + 'columns = activity (observer · passive · new · active). Principal '
+    + 'transitions shown (tx! countdown, Join!, Lv!, rJoinIn!, rJoinMt!/rMt!, '
+    + 'rLv!/rLA!, periodic!); the full Table 10-3 also defines the Begin!→VO reset, '
+    + 'New!→VN from every state, and the txLA!/txLAF! LeaveAll variants.',
 };
 
 function mrpAttrLabel(m) {
