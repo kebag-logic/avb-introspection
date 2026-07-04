@@ -244,29 +244,44 @@ void Api::handleSessionsPost(HttpRequest& req, HttpResponse& resp) {
     JsonValue body = JsonValue::parse(req.body);
     std::string pcapId = body.getStr("pcap_id");
     std::string path = body.getStr("path");
+    // Combine several library pcaps into one timeline (merged by capture time).
+    std::vector<std::string> pcapIds;
+    if (auto* arr = body.get("pcap_ids"); arr)
+        for (auto& v : arr->arr)
+            if (!v.str.empty()) pcapIds.push_back(v.str);
 
     auto s = std::make_shared<Session>();
-    if (!pcapId.empty()) {
+    Store::SessionMeta meta;
+    bool combine = pcapIds.size() > 1;
+    if (!pcapIds.empty()) {
+        for (auto& pid : pcapIds)
+            if (!mStore.hasPcap(pid))
+                return jsonError(resp, 404, "unknown pcap_id " + pid);
+        meta.pcapIds = pcapIds;
+        s->pcapId = meta.pcapId = pcapIds.front();
+        s->name = mStore.pcapName(pcapIds.front());
+        if (combine)
+            s->name += " + " + std::to_string(pcapIds.size() - 1) + " more";
+        meta.name = s->name;
+    } else if (!pcapId.empty()) {
         if (!mStore.hasPcap(pcapId))
             return jsonError(resp, 404, "unknown pcap_id " + pcapId);
-        s->pcapId = pcapId;
-        s->pcapFilePath = mStore.pcapPath(pcapId);
-        s->name = mStore.pcapName(pcapId);
+        s->pcapId = meta.pcapId = pcapId;
+        s->name = meta.name = mStore.pcapName(pcapId);
     } else if (!path.empty()) {
         struct stat st{};
         if (::stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
             return jsonError(resp, 404, "no such file on backend: " + path);
-        s->path = path;
-        s->pcapFilePath = path;
-        s->name = baseName(path);
+        s->path = meta.path = path;
+        s->name = meta.name = baseName(path);
     } else {
-        return jsonError(resp, 400, "body must contain pcap_id or path");
+        return jsonError(resp, 400, "body must contain pcap_id, pcap_ids, or path");
     }
 
-    Store::SessionMeta meta{"", s->name, s->pcapId, s->path, ""};
     std::string serr;
     s->id = mStore.addSession(meta, serr);
-    if (s->id.empty()) return jsonError(resp, 500, serr);
+    // A failed combine is a user error (overlapping / non-absolute timestamps).
+    if (s->id.empty()) return jsonError(resp, combine ? 400 : 500, serr);
     s->createdAt = Store::nowIso8601();
     // Analyze the session's own copy — the folder is self-contained.
     s->pcapFilePath = mStore.sessionPcapPath(s->id);

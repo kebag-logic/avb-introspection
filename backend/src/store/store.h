@@ -30,6 +30,9 @@ public:
     };
     struct SessionMeta {
         std::string id, name, pcapId, path, createdAt;
+        // When a session combines several library pcaps into one timeline, all
+        // source ids are recorded here (pcapId holds the first for back-compat).
+        std::vector<std::string> pcapIds;
     };
 
     bool init(const std::string& dataDir, std::string& err);

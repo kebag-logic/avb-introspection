@@ -36,6 +36,27 @@ void put16le(std::string& s, uint16_t v) {
     s.push_back((char)((v >> 8) & 0xff));
 }
 
+// classic µs-precision Ethernet pcap from {sec, usec, framelen} records
+struct Pk { uint32_t sec, usec, len; };
+std::string buildClassic(std::initializer_list<Pk> pkts) {
+    std::string f;
+    put32le(f, 0xa1b2c3d4);
+    put16le(f, 2);
+    put16le(f, 4);
+    put32le(f, 0);
+    put32le(f, 0);
+    put32le(f, 262144);
+    put32le(f, 1); // Ethernet
+    for (auto& p : pkts) {
+        put32le(f, p.sec);
+        put32le(f, p.usec);
+        put32le(f, p.len);
+        put32le(f, p.len);
+        f.append(p.len, '\0');
+    }
+    return f;
+}
+
 std::shared_ptr<Session> runSession(const std::string& pcapPath) {
     Engine engine;
     auto s = std::make_shared<Session>();
@@ -80,6 +101,62 @@ TEST(pcap_classic_microseconds) {
     CHECK_EQ(p.packets().size(), (size_t)1);
     CHECK_EQ(p.packets()[0].tsNanos, 1700000001500000000ull);
     CHECK_EQ(p.packets()[0].caplen, 60u);
+}
+
+TEST(merge_disjoint_pcaps_ordered_by_time) {
+    // window A: 1700000000.0 .. .5 ; window B: 1700000010.0 .. .5 (disjoint)
+    writeFile(tmpFile("mrg_a.pcap"),
+              buildClassic({{1700000000, 0, 60}, {1700000000, 500000, 60}}));
+    writeFile(tmpFile("mrg_b.pcap"),
+              buildClassic({{1700000010, 0, 64}, {1700000010, 500000, 64}}));
+    std::string err;
+    PcapMergeResult res;
+    // pass B BEFORE A — the merge must still order by capture time.
+    CHECK(mergePcaps({tmpFile("mrg_b.pcap"), tmpFile("mrg_a.pcap")}, {"B", "A"},
+                     tmpFile("mrg_out.pcap"), err, &res));
+    CHECK_EQ(res.packets, (size_t)4);
+    PcapFile m;
+    CHECK(m.open(tmpFile("mrg_out.pcap"), err));
+    const auto& p = m.packets();
+    CHECK_EQ(p.size(), (size_t)4);
+    for (size_t i = 1; i < p.size(); ++i) CHECK(p[i - 1].tsNanos <= p[i].tsNanos);
+    CHECK_EQ(p.front().tsNanos, 1700000000ull * 1000000000ull);      // A's first
+    CHECK_EQ(p.back().tsNanos,
+             1700000010ull * 1000000000ull + 500000ull * 1000ull);  // B's last
+    CHECK_EQ(p[0].caplen, 60u);   // A frames come first
+    CHECK_EQ(p[3].caplen, 64u);   // B frames last
+}
+
+TEST(merge_rejects_overlapping_windows) {
+    writeFile(tmpFile("mrg_ov_a.pcap"),
+              buildClassic({{1700000000, 0, 60}, {1700000005, 0, 60}}));
+    // C at t=1700000003 falls inside A's [0,5] window
+    writeFile(tmpFile("mrg_ov_c.pcap"), buildClassic({{1700000003, 0, 60}}));
+    std::string err;
+    CHECK(!mergePcaps({tmpFile("mrg_ov_a.pcap"), tmpFile("mrg_ov_c.pcap")},
+                      {"A", "C"}, tmpFile("mrg_ov_out.pcap"), err, nullptr));
+    CHECK(err.find("overlap") != std::string::npos);
+}
+
+TEST(merge_rejects_relative_timestamps) {
+    writeFile(tmpFile("mrg_rel.pcap"), buildClassic({{5, 0, 60}}));  // near epoch 0
+    writeFile(tmpFile("mrg_abs.pcap"), buildClassic({{1700000000, 0, 60}}));
+    std::string err;
+    CHECK(!mergePcaps({tmpFile("mrg_rel.pcap"), tmpFile("mrg_abs.pcap")},
+                      {"rel", "abs"}, tmpFile("mrg_rel_out.pcap"), err, nullptr));
+    CHECK(err.find("non-absolute") != std::string::npos);
+}
+
+TEST(merge_then_analyze_spans_both_windows) {
+    writeFile(tmpFile("mrg_s_a.pcap"), buildClassic({{1700000000, 0, 60}}));
+    writeFile(tmpFile("mrg_s_b.pcap"), buildClassic({{1700000020, 0, 60}}));  // +20s
+    std::string err;
+    CHECK(mergePcaps({tmpFile("mrg_s_a.pcap"), tmpFile("mrg_s_b.pcap")},
+                     {"A", "B"}, tmpFile("mrg_span.pcap"), err, nullptr));
+    auto s = runSession(tmpFile("mrg_span.pcap"));
+    CHECK_EQ(s->status.load(), (int)Session::Done);
+    CHECK_EQ(s->packets.load(), (uint64_t)2);
+    CHECK(s->duration >= 19.9);   // one session spanning the 20 s gap
 }
 
 TEST(pcap_rejects_bad_input) {

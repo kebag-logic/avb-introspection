@@ -405,6 +405,25 @@ def run_tests(page, url):
     # Regular users see no admin entry.
     expect(page.locator("#admin-link")).to_be_hidden()
 
+    # ---- combine two disjoint pcaps into one session (backend merge) --------
+    for f in ("combine_part1.pcap", "combine_part2.pcap"):
+        page.locator("input[type=file]").set_input_files(
+            os.path.join(ROOT, "testdata", f))
+        page.wait_for_url("**/#/session/*", timeout=15000)
+        page.locator('a[href="#/home"]').first.click()
+        page.wait_for_timeout(600)
+    # ticking two library pcaps reveals the combine bar
+    expect(page.locator(".combine-bar")).to_be_hidden()
+    page.locator(".prow", has_text="combine_part1").locator(".prow-chk").check()
+    page.locator(".prow", has_text="combine_part2").locator(".prow-chk").check()
+    page.wait_for_timeout(150)
+    expect(page.locator(".combine-bar")).to_be_visible()
+    page.get_by_role("button", name="Combine into a session").click()
+    page.wait_for_url("**/#/session/*", timeout=15000)
+    expect(page.locator(".toolbar .sbadge")).to_have_text("done", timeout=30000)
+    assert "7 pkt" in page.locator(".toolbar").inner_text(), \
+        "combined session should span both captures (7 packets)"
+
     # ---- admin panel ---------------------------------------------------------
     page.locator("#logout-btn").click()
     expect(page.locator("#f-pass")).to_be_visible()

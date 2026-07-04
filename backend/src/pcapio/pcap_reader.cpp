@@ -4,8 +4,10 @@
  */
 #include "pcap_reader.h"
 
+#include <algorithm>
 #include <cstring>
 #include <fstream>
+#include <memory>
 
 namespace avb {
 
@@ -301,6 +303,128 @@ bool PcapFile::parseNg(std::string& err) {
     if (mPackets.empty()) {
         err = "pcapng contains no packets";
         return false;
+    }
+    return true;
+}
+
+namespace {
+
+// 2000-01-01T00:00:00Z in ns — below this a capture's timestamps look relative
+// (zeroed) rather than absolute wall-clock, so it can't share a timeline.
+constexpr uint64_t kYear2000Ns = 946684800ull * 1000000000ull;
+
+std::string fileLabel(const std::vector<std::string>& names,
+                      const std::vector<std::string>& sources, size_t i) {
+    if (i < names.size() && !names[i].empty()) return names[i];
+    const std::string& p = sources[i];
+    auto slash = p.find_last_of('/');
+    return slash == std::string::npos ? p : p.substr(slash + 1);
+}
+
+} // namespace
+
+bool mergePcaps(const std::vector<std::string>& sources,
+                const std::vector<std::string>& names,
+                const std::string& outPath, std::string& err,
+                PcapMergeResult* out) {
+    if (sources.empty()) {
+        err = "no source captures to combine";
+        return false;
+    }
+
+    // Load every source (whole-file, like analysis) and its absolute [min,max].
+    std::vector<std::unique_ptr<PcapFile>> files;
+    files.reserve(sources.size());
+    struct Range {
+        uint64_t minTs, maxTs;
+        size_t idx;
+    };
+    std::vector<Range> ranges;
+    for (size_t i = 0; i < sources.size(); ++i) {
+        auto pf = std::make_unique<PcapFile>();
+        if (!pf->open(sources[i], err)) {
+            err = "'" + fileLabel(names, sources, i) + "': " + err;
+            return false;
+        }
+        const auto& pkts = pf->packets();
+        uint64_t mn = pkts.front().tsNanos, mx = pkts.front().tsNanos;
+        for (const auto& p : pkts) {
+            mn = std::min(mn, p.tsNanos);
+            mx = std::max(mx, p.tsNanos);
+        }
+        if (mn < kYear2000Ns) {
+            err = "'" + fileLabel(names, sources, i) +
+                  "' has non-absolute (relative/zeroed) timestamps — cannot place "
+                  "it on a shared timeline";
+            return false;
+        }
+        ranges.push_back({mn, mx, i});
+        files.push_back(std::move(pf));
+    }
+
+    // Only disjoint capture windows "make sense" to combine. Order by start
+    // time (so uploads in any order are handled) and reject overlaps.
+    std::sort(ranges.begin(), ranges.end(),
+              [](const Range& a, const Range& b) { return a.minTs < b.minTs; });
+    for (size_t i = 1; i < ranges.size(); ++i) {
+        if (ranges[i].minTs <= ranges[i - 1].maxTs) {
+            err = "captures '" + fileLabel(names, sources, ranges[i - 1].idx) +
+                  "' and '" + fileLabel(names, sources, ranges[i].idx) +
+                  "' overlap in time — only captures with non-overlapping time "
+                  "windows can be combined";
+            return false;
+        }
+    }
+
+    // Merge every packet by absolute timestamp (stable: ties keep source order).
+    struct Ref {
+        uint64_t ts;
+        uint32_t file, pkt;
+    };
+    std::vector<Ref> refs;
+    for (uint32_t fi = 0; fi < files.size(); ++fi) {
+        const auto& pkts = files[fi]->packets();
+        for (uint32_t pi = 0; pi < pkts.size(); ++pi)
+            refs.push_back({pkts[pi].tsNanos, fi, pi});
+    }
+    std::stable_sort(refs.begin(), refs.end(),
+                     [](const Ref& a, const Ref& b) { return a.ts < b.ts; });
+
+    // Write one classic nanosecond Ethernet pcap (native endianness — the reader
+    // detects it via the magic, so no swap is needed on read-back).
+    std::ofstream o(outPath, std::ios::binary);
+    if (!o) {
+        err = "cannot write merged capture: " + outPath;
+        return false;
+    }
+    auto w32 = [&](uint32_t v) { o.write(reinterpret_cast<const char*>(&v), 4); };
+    auto w16 = [&](uint16_t v) { o.write(reinterpret_cast<const char*>(&v), 2); };
+    w32(kMagicNs);
+    w16(2);
+    w16(4);          // version 2.4
+    w32(0);          // thiszone
+    w32(0);          // sigfigs
+    w32(262144);     // snaplen
+    w32(kLinkEthernet);
+    for (const auto& r : refs) {
+        const PcapFile& f = *files[r.file];
+        const PcapPacket& p = f.packets()[r.pkt];
+        w32((uint32_t)(p.tsNanos / 1000000000ull));
+        w32((uint32_t)(p.tsNanos % 1000000000ull));
+        w32(p.caplen);
+        w32(std::max(p.origlen, p.caplen));
+        o.write(reinterpret_cast<const char*>(f.packetData(r.pkt)), p.caplen);
+    }
+    o.flush();
+    if (!o) {
+        err = "failed writing merged capture: " + outPath;
+        return false;
+    }
+    if (out) {
+        out->firstTsNanos = refs.front().ts;
+        out->lastTsNanos = refs.back().ts;
+        out->packets = refs.size();
+        out->sources = sources.size();
     }
     return true;
 }

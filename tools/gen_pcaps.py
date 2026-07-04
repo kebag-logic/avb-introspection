@@ -813,10 +813,33 @@ def scenario_milan():
     write_pcap("testdata/milan_scenario.pcap", pk)
 
 
+def scenario_combine_part1():
+    # "capture part 1": entity comes up and the talker starts declaring (t 0..2)
+    pk = []
+    pk.append((0.10, eth(ADP_MC, TALKER_MAC, ETYPE_AVTP, adp(0, 4, E_TALKER, avail_idx=1))))
+    pk.append((0.20, eth(MVRP_MC, TALKER_MAC, ETYPE_MVRP,
+                         mvrp_pdu([mrp_vector(struct.pack(">H", VLAN), [JOININ])]))))
+    pk.append((0.50, msrp_talker([JOININ])))
+    pk.append((1.50, msrp_talker([JOININ])))
+    write_pcap("testdata/combine_part1.pcap", pk)
+
+
+def scenario_combine_part2():
+    # "capture part 2": ~100 s later the talker keeps declaring, then withdraws.
+    # Disjoint time window from part 1 -> the two combine into one timeline.
+    pk = []
+    pk.append((100.00, msrp_talker([JOININ])))
+    pk.append((101.00, eth(ADP_MC, TALKER_MAC, ETYPE_AVTP, adp(0, 4, E_TALKER, avail_idx=2))))
+    pk.append((102.00, msrp_talker([LV])))
+    write_pcap("testdata/combine_part2.pcap", pk)
+
+
 def main():
     os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     os.makedirs("testdata", exist_ok=True)
     print("generating golden pcaps:")
+    scenario_combine_part1()
+    scenario_combine_part2()
     scenario_msrp_basic()
     scenario_msrp_failure()
     scenario_mvrp()

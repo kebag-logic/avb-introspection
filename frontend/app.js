@@ -574,6 +574,11 @@ function homeView(app) {
   const metricsBox = h('div', { class: 'metrics-strip' });
   const pcapList = h('div', { class: 'plist' });
   const sessList = h('div', { class: 'slist' });
+  const selectedPcaps = new Set();   /* library pcap ids ticked for combining */
+  const combineBtn = h('button', { class: 'btn btn-primary btn-sm', type: 'button' }, 'Combine into a session');
+  combineBtn.addEventListener('click', () => combineSelected());
+  const combineBar = h('div', { class: 'combine-bar', hidden: true },
+    h('span', { class: 'combine-msg dim small' }), h('span', { class: 'toolbar-spacer' }), combineBtn);
   const fileIn = h('input', {
     type: 'file', accept: '.pcap,.pcapng,.cap', hidden: true,
     onchange: () => { if (fileIn.files && fileIn.files[0]) uploadFile(fileIn.files[0]); },
@@ -594,6 +599,7 @@ function homeView(app) {
       h('div', { class: 'home-cols' },
         h('section', { class: 'panel' },
           h('div', { class: 'panel-head' }, h('h2', null, 'Uploaded pcaps'), uploadBtn, fileIn),
+          combineBar,
           pcapList,
         ),
         h('section', { class: 'panel' },
@@ -656,6 +662,27 @@ function homeView(app) {
     }
   }
 
+  function updateCombineBar() {
+    const n = selectedPcaps.size;
+    combineBar.hidden = n < 2;
+    if (n >= 2) combineBar.querySelector('.combine-msg').textContent =
+      n + ' pcaps selected — merged onto one timeline by capture time (non-overlapping only).';
+  }
+
+  async function combineSelected() {
+    const ids = [...selectedPcaps];
+    if (ids.length < 2) return;
+    combineBtn.disabled = true;
+    try {
+      const s = await api('/api/sessions', { method: 'POST', json: { pcap_ids: ids } });
+      navigate('#/session/' + encodeURIComponent(s.id));
+    } catch (err) {
+      /* backend rejects overlapping / relative-timestamp combinations */
+      toast('combine failed: ' + err.message, 'error');
+      combineBtn.disabled = false;
+    }
+  }
+
   async function deleteSession(id) {
     if (!window.confirm('Delete session ' + id + '?')) return;
     try {
@@ -668,20 +695,34 @@ function homeView(app) {
   }
 
   function renderPcaps(pcaps) {
+    const live = new Set(pcaps.map((p) => p.id));
+    for (const id of [...selectedPcaps]) if (!live.has(id)) selectedPcaps.delete(id);
     if (!pcaps.length) {
+      selectedPcaps.clear();
+      updateCombineBar();
       pcapList.replaceChildren(h('div', { class: 'empty' }, 'No pcaps yet — upload one.'));
       return;
     }
     pcapList.replaceChildren(...pcaps.map((p) => {
       const btn = h('button', { class: 'btn btn-sm', type: 'button' }, 'Analyze');
       btn.addEventListener('click', () => analyzePcap(p.id, btn));
+      const chk = h('input', {
+        type: 'checkbox', class: 'prow-chk', checked: selectedPcaps.has(p.id),
+        title: 'select to combine several pcaps into one session',
+      });
+      chk.addEventListener('change', () => {
+        if (chk.checked) selectedPcaps.add(p.id); else selectedPcaps.delete(p.id);
+        updateCombineBar();
+      });
       return h('div', { class: 'prow' },
+        chk,
         h('span', { class: 'prow-name', title: p.name }, p.name),
         h('span', { class: 'dim mono small' }, fmtBytes(p.size)),
         h('span', { class: 'dim small' }, fmtDate(p.uploaded_at)),
         btn,
       );
     }));
+    updateCombineBar();
   }
 
   function renderSessions(sessions) {

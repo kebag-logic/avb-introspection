@@ -454,11 +454,24 @@ body {
 
 .prow {
   display: grid;
-  grid-template-columns: minmax(120px, 1fr) 80px 150px auto;
+  grid-template-columns: auto minmax(120px, 1fr) 80px 150px auto;
   gap: 10px;
   align-items: center;
   padding: 6px 4px;
   border-top: 1px solid var(--border);
+}
+.prow-chk { width: 15px; height: 15px; cursor: pointer; accent-color: var(--accent); }
+
+/* combine-selected action bar above the pcap list */
+.combine-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 .prow:first-child { border-top: none; }
 .prow-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

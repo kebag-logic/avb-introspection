@@ -12,6 +12,7 @@
 #include <fstream>
 #include <sstream>
 
+#include "../pcapio/pcap_reader.h"
 #include "../util/json.h"
 
 namespace avb {
@@ -70,10 +71,13 @@ bool Store::init(const std::string& dataDir, std::string& err) {
                               p.getStr("uploaded_at"),
                               (uint64_t)p.getNum("size")});
     if (auto* arr = root.get("sessions"); arr)
-        for (auto& s : arr->arr)
-            mSessions.push_back({s.getStr("id"), s.getStr("name"),
-                                 s.getStr("pcap_id"), s.getStr("path"),
-                                 s.getStr("created_at")});
+        for (auto& s : arr->arr) {
+            SessionMeta sm{s.getStr("id"), s.getStr("name"), s.getStr("pcap_id"),
+                           s.getStr("path"), s.getStr("created_at"), {}};
+            if (auto* ids = s.get("pcap_ids"); ids)
+                for (auto& v : ids->arr) sm.pcapIds.push_back(v.str);
+            mSessions.push_back(std::move(sm));
+        }
     return true;
 }
 
@@ -100,6 +104,11 @@ bool Store::save(std::string& err) {
         w.kv("pcap_id", s.pcapId);
         w.kv("path", s.path);
         w.kv("created_at", s.createdAt);
+        if (!s.pcapIds.empty()) {
+            w.key("pcap_ids").beginArr();
+            for (auto& pid : s.pcapIds) w.value(pid);
+            w.endArr();
+        }
         w.endObj();
     }
     w.endArr();
@@ -187,33 +196,69 @@ std::string Store::addSession(SessionMeta meta, std::string& err) {
     meta.id = "s" + std::to_string(mNextSession);
     meta.createdAt = nowIso8601();
 
+    // Resolve the source captures. pcapIds (>=1) is the combine path; otherwise
+    // a single library pcap or a server path (unchanged behaviour).
+    auto nameOf = [&](const std::string& pid) {
+        for (auto& p : mPcaps)
+            if (p.id == pid) return p.name;
+        return pid;
+    };
+    std::vector<std::string> srcPaths, srcNames;
+    if (!meta.pcapIds.empty()) {
+        for (auto& pid : meta.pcapIds) {
+            srcPaths.push_back(pcapPath(pid));
+            srcNames.push_back(nameOf(pid));
+        }
+        if (meta.pcapId.empty()) meta.pcapId = meta.pcapIds.front();
+    } else if (!meta.pcapId.empty()) {
+        srcPaths.push_back(pcapPath(meta.pcapId));
+        srcNames.push_back(nameOf(meta.pcapId));
+    } else {
+        srcPaths.push_back(meta.path);
+        srcNames.push_back(meta.name);
+    }
+
     // Session folder with its own capture copy — self-contained (BE-8).
-    std::string src =
-        meta.pcapId.empty() ? meta.path : pcapPath(meta.pcapId);
     std::error_code ec;
     std::filesystem::create_directories(sessionDir(meta.id), ec);
     if (ec) {
         err = "cannot create session folder: " + ec.message();
         return "";
     }
-    std::filesystem::copy_file(src, sessionPcapPath(meta.id),
-                               std::filesystem::copy_options::overwrite_existing,
-                               ec);
-    if (ec) {
-        err = "cannot copy capture into session folder: " + ec.message();
-        std::filesystem::remove_all(sessionDir(meta.id), ec);
-        return "";
+    if (srcPaths.size() == 1) {
+        std::filesystem::copy_file(
+            srcPaths[0], sessionPcapPath(meta.id),
+            std::filesystem::copy_options::overwrite_existing, ec);
+        if (ec) {
+            err = "cannot copy capture into session folder: " + ec.message();
+            std::filesystem::remove_all(sessionDir(meta.id), ec);
+            return "";
+        }
+    } else {
+        // Merge the sources into one chronological capture.pcap; everything
+        // downstream then treats it as an ordinary single-file session.
+        if (!mergePcaps(srcPaths, srcNames, sessionPcapPath(meta.id), err)) {
+            std::filesystem::remove_all(sessionDir(meta.id), ec);
+            return ""; // err set by mergePcaps
+        }
     }
 
     // Seed the investigation notes the user edits in the UI.
     {
         std::ofstream f(sessionNotesPath(meta.id), std::ios::trunc);
         f << "# Investigation: " << meta.name << "\n\n"
-          << "- Created: " << meta.createdAt << "\n"
-          << "- Capture: `" << meta.name << "`"
-          << (meta.pcapId.empty() ? " (from server path `" + meta.path + "`)"
-                                  : " (upload " + meta.pcapId + ")")
-          << "\n\n## Context\n\n_What is being investigated, and why?_\n\n"
+          << "- Created: " << meta.createdAt << "\n";
+        if (srcNames.size() > 1) {
+            f << "- Combined captures (" << srcNames.size()
+              << ", merged by capture time):\n";
+            for (auto& nm : srcNames) f << "  - `" << nm << "`\n";
+        } else {
+            f << "- Capture: `" << meta.name << "`"
+              << (meta.pcapId.empty() ? " (from server path `" + meta.path + "`)"
+                                      : " (upload " + meta.pcapId + ")")
+              << "\n";
+        }
+        f << "\n## Context\n\n_What is being investigated, and why?_\n\n"
           << "## Findings\n\n- \n\n## Open questions\n\n- \n";
     }
 
