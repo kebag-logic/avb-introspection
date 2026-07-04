@@ -61,12 +61,10 @@ struct PcapMergeResult {
  * Combine several Ethernet captures into ONE chronologically-ordered classic
  * (nanosecond) pcap at outPath. Packets from all sources are merged and sorted
  * by absolute capture timestamp, so captures uploaded in any order land on a
- * single timeline with real gaps preserved. Rejects (returns false + err):
- *   - a source that can't be opened / isn't an Ethernet capture,
- *   - a source with non-absolute (relative/zeroed) timestamps, and
- *   - two sources whose capture time-windows OVERLAP (only disjoint windows
- *     make sense to combine).
- * `names[i]` is a human label for sources[i] used in error messages.
+ * single timeline — whether their time-windows are disjoint (gaps preserved)
+ * or OVERLAP (e.g. two tap points, interleaved packet-by-packet). The only
+ * failure (returns false + err) is a source that can't be opened / isn't an
+ * Ethernet capture. `names[i]` is a human label for sources[i] used in errors.
  */
 bool mergePcaps(const std::vector<std::string>& sources,
                 const std::vector<std::string>& names,

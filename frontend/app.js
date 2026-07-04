@@ -666,7 +666,7 @@ function homeView(app) {
     const n = selectedPcaps.size;
     combineBar.hidden = n < 2;
     if (n >= 2) combineBar.querySelector('.combine-msg').textContent =
-      n + ' pcaps selected — merged onto one timeline by capture time (non-overlapping only).';
+      n + ' pcaps selected — merged onto one timeline by capture time (overlapping windows interleave).';
   }
 
   async function combineSelected() {

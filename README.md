@@ -120,12 +120,12 @@ an existing investigation, and notes survive restarts with the session.
 **Combining captures.** Several library pcaps can be merged into one session
 and timeline: tick them in the library and choose *Combine into a session*
 (or `POST /api/sessions {"pcap_ids": [...]}`). The backend merges all packets by
-absolute capture time — so captures uploaded in any order land on a single
-chronological timeline with real gaps preserved — into one `capture.pcap`, which
-everything downstream then treats as an ordinary single-file session. Only
-captures with **non-overlapping** time windows can be combined (e.g. ring-buffer
-splits or capture part 1 then part 2); overlapping or relatively-timestamped
-captures are rejected with a clear reason.
+absolute capture time into one `capture.pcap`, which everything downstream then
+treats as an ordinary single-file session. Captures uploaded in any order land
+on a single chronological timeline: **disjoint** windows keep their real gaps
+(e.g. ring-buffer splits, or capture part 1 then part 2), and **overlapping**
+windows — such as two tap points watching the same period — are interleaved
+packet-by-packet by timestamp.
 
 ## Testing
 

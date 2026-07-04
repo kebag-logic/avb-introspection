@@ -127,24 +127,29 @@ TEST(merge_disjoint_pcaps_ordered_by_time) {
     CHECK_EQ(p[3].caplen, 64u);   // B frames last
 }
 
-TEST(merge_rejects_overlapping_windows) {
-    writeFile(tmpFile("mrg_ov_a.pcap"),
-              buildClassic({{1700000000, 0, 60}, {1700000005, 0, 60}}));
-    // C at t=1700000003 falls inside A's [0,5] window
-    writeFile(tmpFile("mrg_ov_c.pcap"), buildClassic({{1700000003, 0, 60}}));
+TEST(merge_overlapping_windows_interleaves) {
+    // Two tap points watching an OVERLAPPING window — A at 0,2,4 and B at 1,3.
+    writeFile(tmpFile("mrg_ov_a.pcap"), buildClassic({{1700000000, 0, 60},
+                                                      {1700000002, 0, 60},
+                                                      {1700000004, 0, 60}}));
+    writeFile(tmpFile("mrg_ov_b.pcap"),
+              buildClassic({{1700000001, 0, 64}, {1700000003, 0, 64}}));
     std::string err;
-    CHECK(!mergePcaps({tmpFile("mrg_ov_a.pcap"), tmpFile("mrg_ov_c.pcap")},
-                      {"A", "C"}, tmpFile("mrg_ov_out.pcap"), err, nullptr));
-    CHECK(err.find("overlap") != std::string::npos);
-}
-
-TEST(merge_rejects_relative_timestamps) {
-    writeFile(tmpFile("mrg_rel.pcap"), buildClassic({{5, 0, 60}}));  // near epoch 0
-    writeFile(tmpFile("mrg_abs.pcap"), buildClassic({{1700000000, 0, 60}}));
-    std::string err;
-    CHECK(!mergePcaps({tmpFile("mrg_rel.pcap"), tmpFile("mrg_abs.pcap")},
-                      {"rel", "abs"}, tmpFile("mrg_rel_out.pcap"), err, nullptr));
-    CHECK(err.find("non-absolute") != std::string::npos);
+    PcapMergeResult res;
+    CHECK(mergePcaps({tmpFile("mrg_ov_a.pcap"), tmpFile("mrg_ov_b.pcap")},
+                     {"A", "B"}, tmpFile("mrg_ov_out.pcap"), err, &res));
+    CHECK_EQ(res.packets, (size_t)5);   // nothing dropped — all interleaved
+    PcapFile m;
+    CHECK(m.open(tmpFile("mrg_ov_out.pcap"), err));
+    const auto& p = m.packets();
+    CHECK_EQ(p.size(), (size_t)5);
+    for (size_t i = 1; i < p.size(); ++i) CHECK(p[i - 1].tsNanos <= p[i].tsNanos);
+    // interleaved A,B,A,B,A by time -> caplens 60,64,60,64,60
+    CHECK_EQ(p[0].caplen, 60u);
+    CHECK_EQ(p[1].caplen, 64u);
+    CHECK_EQ(p[2].caplen, 60u);
+    CHECK_EQ(p[3].caplen, 64u);
+    CHECK_EQ(p[4].caplen, 60u);
 }
 
 TEST(merge_then_analyze_spans_both_windows) {

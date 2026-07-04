@@ -309,10 +309,6 @@ bool PcapFile::parseNg(std::string& err) {
 
 namespace {
 
-// 2000-01-01T00:00:00Z in ns — below this a capture's timestamps look relative
-// (zeroed) rather than absolute wall-clock, so it can't share a timeline.
-constexpr uint64_t kYear2000Ns = 946684800ull * 1000000000ull;
-
 std::string fileLabel(const std::vector<std::string>& names,
                       const std::vector<std::string>& sources, size_t i) {
     if (i < names.size() && !names[i].empty()) return names[i];
@@ -332,51 +328,22 @@ bool mergePcaps(const std::vector<std::string>& sources,
         return false;
     }
 
-    // Load every source (whole-file, like analysis) and its absolute [min,max].
+    // Load every source (whole-file, like analysis).
     std::vector<std::unique_ptr<PcapFile>> files;
     files.reserve(sources.size());
-    struct Range {
-        uint64_t minTs, maxTs;
-        size_t idx;
-    };
-    std::vector<Range> ranges;
     for (size_t i = 0; i < sources.size(); ++i) {
         auto pf = std::make_unique<PcapFile>();
         if (!pf->open(sources[i], err)) {
             err = "'" + fileLabel(names, sources, i) + "': " + err;
             return false;
         }
-        const auto& pkts = pf->packets();
-        uint64_t mn = pkts.front().tsNanos, mx = pkts.front().tsNanos;
-        for (const auto& p : pkts) {
-            mn = std::min(mn, p.tsNanos);
-            mx = std::max(mx, p.tsNanos);
-        }
-        if (mn < kYear2000Ns) {
-            err = "'" + fileLabel(names, sources, i) +
-                  "' has non-absolute (relative/zeroed) timestamps — cannot place "
-                  "it on a shared timeline";
-            return false;
-        }
-        ranges.push_back({mn, mx, i});
         files.push_back(std::move(pf));
     }
 
-    // Only disjoint capture windows "make sense" to combine. Order by start
-    // time (so uploads in any order are handled) and reject overlaps.
-    std::sort(ranges.begin(), ranges.end(),
-              [](const Range& a, const Range& b) { return a.minTs < b.minTs; });
-    for (size_t i = 1; i < ranges.size(); ++i) {
-        if (ranges[i].minTs <= ranges[i - 1].maxTs) {
-            err = "captures '" + fileLabel(names, sources, ranges[i - 1].idx) +
-                  "' and '" + fileLabel(names, sources, ranges[i].idx) +
-                  "' overlap in time — only captures with non-overlapping time "
-                  "windows can be combined";
-            return false;
-        }
-    }
-
-    // Merge every packet by absolute timestamp (stable: ties keep source order).
+    // Interleave every packet by absolute capture timestamp. Captures may
+    // OVERLAP in time (e.g. two tap points watching the same window) or be
+    // disjoint with gaps — either way they land on one chronological timeline;
+    // uploads in any order are handled, and ties keep source order.
     struct Ref {
         uint64_t ts;
         uint32_t file, pkt;
