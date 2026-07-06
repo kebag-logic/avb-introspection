@@ -1166,9 +1166,9 @@ function edgeTrigLink(t) {
   if (ei >= 0 && smJumpToEvent)
     return h('button', {
       class: 'linklike mono smpop-pkt', type: 'button',
-      title: 'go to this derived state event in the table / timeline',
+      title: 'go to this derived state event (# ' + ei + ' in the table)',
       onclick: () => { closeEdgePop(); smJumpToEvent(ei); window.focus(); },
-    }, '◆ event');
+    }, '◆ #' + ei);
   return h('span', { class: 'dim mono smpop-nopkt',
     title: 'not tied to a single packet (timer / derived event)' }, 'timer');
 }
@@ -3185,7 +3185,7 @@ function sessionView(app, id) {
 
   /* the jump link for one history transition: its causing packet ("pkt N") if
      there is one, else — for a timer/event-driven transition — the transition
-     event itself ("◆ event"), matching how packet links behave. */
+     event itself ("◆ #<i>", its place in the table's # column). */
   function histLink(t) {
     if (typeof t.n === 'number' && t.n > 0)
       return h('button', { class: 'linklike mono', type: 'button', onclick: () => jumpToPacket(t.n) }, 'pkt ' + t.n);
@@ -3193,9 +3193,9 @@ function sessionView(app, id) {
     if (ei >= 0)
       return h('button', {
         class: 'linklike mono', type: 'button',
-        title: 'go to this derived state event in the table / timeline',
+        title: 'go to this derived state event (# ' + ei + ' in the table)',
         onclick: () => jumpToEvent(ei),
-      }, '◆ event');
+      }, '◆ #' + ei);
     return null;
   }
 
