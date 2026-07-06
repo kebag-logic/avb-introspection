@@ -1583,19 +1583,24 @@ input.marker-label { width: 100%; }
 .machine-sub { display: block; margin-top: 2px; }
 
 /* ── collapsible machine cards (square fold toggle) ── */
-.machine-head.is-foldhead { position: relative; padding-left: 24px; cursor: pointer; }
+.machine-head.is-foldhead { position: relative; padding-left: 32px; cursor: pointer; }
 .sm-fold {
-  width: 16px; height: 16px;
+  width: 22px; height: 22px;
   display: inline-flex; align-items: center; justify-content: center;
-  border: 1px solid var(--border); border-radius: 3px;
-  background: transparent; color: var(--muted);
-  cursor: pointer; padding: 0; font: 10px/1 var(--mono);
+  border: 1px solid var(--border-strong); border-radius: 5px;
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  color: var(--text-2);
+  cursor: pointer; padding: 0; font: 13px/1 var(--mono);
 }
-.machine-head.is-foldhead > .sm-fold { position: absolute; left: 0; top: 1px; }
+.machine-head.is-foldhead > .sm-fold { position: absolute; left: 0; top: 0; }
 .sm-fold::before { content: '▾'; }
 .is-collapsed > .machine-head > .sm-fold::before,
 .sm-group.is-collapsed > .sm-group-head > .sm-fold::before { content: '▸'; }
-.sm-fold:hover { color: var(--text); border-color: var(--accent); }
+.sm-fold:hover {
+  color: var(--text);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
 .machine-card.is-collapsed { padding-bottom: 8px; }
 .machine-card.is-collapsed > :not(.machine-head) { display: none; }
 
