@@ -487,8 +487,12 @@ function render() {
 function loginView(app) {
   let mode = 'login';
   let busy = false;
+  let bootstrap = false;   /* fresh deployment: creating the first admin */
 
   const errBox = h('div', { class: 'form-error', hidden: true });
+  const bootBanner = h('div', { class: 'login-boot', hidden: true },
+    h('b', null, 'First-time setup. '),
+    'No administrator exists yet — the account you create now becomes the administrator.');
   const userIn = h('input', {
     class: 'input', id: 'f-user', autocomplete: 'username',
     spellcheck: 'false', placeholder: 'username',
@@ -507,11 +511,26 @@ function loginView(app) {
 
   function setMode(m) {
     mode = m;
-    submitBtn.textContent = mode === 'login' ? 'Log in' : 'Register';
+    submitBtn.textContent = bootstrap ? 'Create admin account'
+      : mode === 'login' ? 'Log in' : 'Register';
     toggle.textContent = mode === 'login' ? 'No account? Register' : 'Have an account? Log in';
     hint.hidden = mode === 'login';
     errBox.hidden = true;
   }
+
+  /* Ask the backend whether it still needs its first admin. */
+  (async () => {
+    try {
+      const b = await api('/api/bootstrap', { auth: false });
+      if (b && b.needs_admin) {
+        bootstrap = true;
+        bootBanner.hidden = false;
+        toggle.hidden = true;            /* only path is "create the admin" */
+        passIn.autocomplete = 'new-password';
+        setMode('register');
+      }
+    } catch (err) { /* offline / old backend: normal login screen */ }
+  })();
 
   function showErr(msg) {
     errBox.textContent = msg;
@@ -529,7 +548,8 @@ function loginView(app) {
     errBox.hidden = true;
     try {
       if (mode === 'register') {
-        await api('/api/register', { method: 'POST', json: { username: u, password: p }, auth: false });
+        const reg = await api('/api/register', { method: 'POST', json: { username: u, password: p }, auth: false });
+        if (bootstrap && reg && reg.role === 'admin') toast('administrator account created');
       }
       const r = await api('/api/login', { method: 'POST', json: { username: u, password: p }, auth: false });
       setAuth(r.token, r.username || u);
@@ -549,6 +569,7 @@ function loginView(app) {
       h('form', { class: 'login-card', onsubmit: submit },
         h('h1', { class: 'login-title' }, 'AVB ', h('span', null, 'Introspection')),
         h('p', { class: 'login-sub' }, 'Milan / AVB protocol analyzer'),
+        bootBanner,
         errBox,
         h('label', { class: 'field-label', for: 'f-user' }, 'Username'),
         userIn,
@@ -708,17 +729,17 @@ function homeView(app) {
     }
   }
 
-  /* ── library folders (flat): fold state per browser, move via drag-and-drop
-     onto a folder header (or the panel header = root) or the row dropdown ── */
-  const foldedFolders = new Set(JSON.parse(localStorage.getItem('avb.pcapFold') || '[]'));
-  function saveFolded() {
-    localStorage.setItem('avb.pcapFold', JSON.stringify([...foldedFolders]));
-  }
+  /* ── library file-explorer (folders are flat, one level under the root) ──
+     Navigate into a folder to see its captures; the breadcrumb always starts
+     at "root". Move a capture by dragging its row onto a folder (or the
+     "root" crumb / panel header), or via the per-row move menu. ── */
+  let pcapCwd = '';           // current folder, '' = library root
+  let lastPcaps = [], lastFolders = [];
 
   async function movePcap(pid, folder) {
     try {
       await api('/api/pcaps/' + encodeURIComponent(pid), { method: 'PUT', json: { folder } });
-      toast(folder ? 'moved to ' + folder : 'moved to the library root');
+      toast(folder ? 'moved to ' + folder : 'moved to root');
       refresh();
     } catch (err) {
       toast('move failed: ' + err.message, 'error');
@@ -730,6 +751,7 @@ function homeView(app) {
     if (!name || !name.trim()) return;
     try {
       await api('/api/pcaps/folders', { method: 'POST', json: { name: name.trim() } });
+      pcapCwd = name.trim();   /* open the new folder so it's obvious where it is */
       refresh();
     } catch (err) {
       toast('create folder failed: ' + err.message, 'error');
@@ -739,8 +761,7 @@ function homeView(app) {
   async function deleteFolder(name) {
     try {
       await api('/api/pcaps/folders/' + encodeURIComponent(name), { method: 'DELETE' });
-      foldedFolders.delete(name);
-      saveFolded();
+      if (pcapCwd === name) pcapCwd = '';
       refresh();
     } catch (err) {
       toast('delete folder failed: ' + err.message, 'error');
@@ -770,8 +791,8 @@ function homeView(app) {
     });
   }
 
-  function pcapRow(p, folders, inFolder) {
-    const btn = h('button', { class: 'btn btn-sm', type: 'button' }, 'Analyze');
+  function pcapRow(p, folders) {
+    const btn = h('button', { class: 'btn btn-sm prow-analyze', type: 'button' }, 'Analyze');
     btn.addEventListener('click', () => analyzePcap(p.id, btn));
     const chk = h('input', {
       type: 'checkbox', class: 'prow-chk', checked: selectedPcaps.has(p.id),
@@ -783,23 +804,23 @@ function homeView(app) {
     });
     const move = h('select', {
       class: 'input input-sm prow-move', title: 'move this capture to a folder',
-    }, h('option', { value: '' }, '(root)'),
+    }, h('option', { value: '' }, 'root'),
       folders.map((f) => h('option', { value: f }, f)));
     move.value = p.folder || '';
     move.addEventListener('change', () => movePcap(p.id, move.value));
     const delBtn = role === 'admin' ? h('button', {
-      class: 'btn btn-danger btn-sm', type: 'button',
+      class: 'btn btn-danger btn-sm prow-del', type: 'button',
       title: 'delete this capture from the library (admin)',
       onclick: () => deletePcap(p),
     }, 'Delete') : null;
     const row = h('div', {
-      class: 'prow' + (inFolder ? ' in-folder' : ''), draggable: 'true',
-      title: 'drag onto a folder to move',
+      class: 'prow', draggable: 'true',
+      title: 'drag onto a folder (or “root”) to move',
     },
       chk,
       h('span', { class: 'prow-name', title: p.name }, p.name),
-      h('span', { class: 'dim mono small' }, fmtBytes(p.size)),
-      h('span', { class: 'dim small' }, fmtDate(p.uploaded_at)),
+      h('span', { class: 'prow-size dim mono small' }, fmtBytes(p.size)),
+      h('span', { class: 'prow-date dim small' }, fmtDate(p.uploaded_at)),
       move,
       btn,
       delBtn,
@@ -813,15 +834,63 @@ function homeView(app) {
     return row;
   }
 
+  function folderRow(name, list) {
+    const row = h('div', {
+      class: 'pexp-folder', role: 'button', tabindex: '0',
+      title: 'open folder “' + name + '” · drop a capture here to move it',
+    },
+      h('span', { class: 'pexp-fico' }, '📂'),
+      h('span', { class: 'pexp-fname' }, name),
+      h('span', { class: 'dim small' },
+        list.length + (list.length === 1 ? ' capture' : ' captures')),
+      h('span', { class: 'toolbar-spacer' }),
+      !list.length ? h('button', {
+        class: 'btn btn-ghost btn-sm', type: 'button',
+        title: 'delete this empty folder',
+        onclick: (ev) => { ev.stopPropagation(); deleteFolder(name); },
+      }, '✕') : null);
+    const open = () => { pcapCwd = name; renderLibrary(); };
+    row.addEventListener('click', (ev) => { if (ev.target.closest('button')) return; open(); });
+    row.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); open(); }
+    });
+    dropTarget(row, name);
+    return row;
+  }
+
+  function crumbBar() {
+    const root = h('button', {
+      class: 'pexp-seg' + (pcapCwd ? '' : ' is-cur'), type: 'button',
+      title: pcapCwd ? 'back to the library root' : 'library root',
+    }, '📁 root');
+    root.addEventListener('click', () => { pcapCwd = ''; renderLibrary(); });
+    dropTarget(root, '');   /* drop here to move a capture back to the root */
+    const bar = h('div', { class: 'pexp-crumb' }, root);
+    if (pcapCwd) {
+      bar.appendChild(h('span', { class: 'pexp-sep' }, '›'));
+      bar.appendChild(h('span', { class: 'pexp-seg is-cur' }, '📂 ' + pcapCwd));
+    }
+    return bar;
+  }
+
   function renderPcaps(pcaps, folders) {
+    lastPcaps = pcaps;
+    lastFolders = folders;
+    renderLibrary();
+  }
+
+  function renderLibrary() {
+    const pcaps = lastPcaps, folders = lastFolders;
     const live = new Set(pcaps.map((p) => p.id));
     for (const id of [...selectedPcaps]) if (!live.has(id)) selectedPcaps.delete(id);
-    /* the panel header doubles as the "move back to root" drop zone */
+    /* the panel header is a "move back to root" drop zone */
     const panelHead = document.getElementById('pcap-panel-head');
     if (panelHead && !panelHead.dataset.drop) {
       panelHead.dataset.drop = '1';
       dropTarget(panelHead, '');
     }
+    if (pcapCwd && !folders.includes(pcapCwd)) pcapCwd = '';   /* folder went away */
+
     if (!pcaps.length && !folders.length) {
       selectedPcaps.clear();
       updateCombineBar();
@@ -834,34 +903,20 @@ function homeView(app) {
       const key = byFolder.has(p.folder || '') ? (p.folder || '') : '';
       byFolder.get(key).push(p);
     }
-    const out = [];
-    for (const p of byFolder.get('')) out.push(pcapRow(p, folders, false));
-    for (const [name, list] of byFolder) {
-      if (name === '') continue;
-      const folded = foldedFolders.has(name);
-      const foldBtn = foldSquare(!folded);
-      const head = h('div', { class: 'pfolder', role: 'button' },
-        foldBtn,
-        h('span', { class: 'pfolder-ico' }, folded ? '📁' : '📂'),
-        h('span', { class: 'pfolder-name' }, name),
-        h('span', { class: 'dim small' },
-          list.length + (list.length === 1 ? ' capture' : ' captures')),
-        h('span', { class: 'toolbar-spacer' }),
-        !list.length ? h('button', {
-          class: 'btn btn-ghost btn-sm', type: 'button',
-          title: 'delete this empty folder',
-          onclick: (ev) => { ev.stopPropagation(); deleteFolder(name); },
-        }, '✕') : null);
-      head.addEventListener('click', (ev) => {
-        if (ev.target.closest('button') && !ev.target.closest('.sm-fold')) return;
-        if (foldedFolders.has(name)) foldedFolders.delete(name);
-        else foldedFolders.add(name);
-        saveFolded();
-        renderPcaps(pcaps, folders);
-      });
-      dropTarget(head, name);
-      out.push(head);
-      if (!folded) for (const p of list) out.push(pcapRow(p, folders, true));
+
+    const out = [crumbBar()];
+    if (!pcapCwd) {
+      for (const f of folders) out.push(folderRow(f, byFolder.get(f) || []));
+      const rootList = byFolder.get('');
+      for (const p of rootList) out.push(pcapRow(p, folders));
+      if (!folders.length && !rootList.length)
+        out.push(h('div', { class: 'empty small' }, 'Empty library.'));
+    } else {
+      const list = byFolder.get(pcapCwd) || [];
+      if (!list.length)
+        out.push(h('div', { class: 'empty small' },
+          'This folder is empty — drag captures onto it, or use a row’s move menu.'));
+      for (const p of list) out.push(pcapRow(p, folders));
     }
     pcapList.replaceChildren(...out);
     updateCombineBar();
@@ -2062,15 +2117,20 @@ function adminView(app) {
       usersBox.replaceChildren(h('div', { class: 'empty' }, 'No users.'));
       return;
     }
+    const adminCount = users.filter((u) => u.role === 'admin').length;
     usersBox.replaceChildren(...users.map((u) => {
       const self = u.username === username;
+      const lastAdmin = u.role === 'admin' && adminCount <= 1;
+      const locked = self || lastAdmin;
       const del = h('button', {
         class: 'btn btn-danger btn-sm admin-del', type: 'button',
         dataset: { user: u.username || '' },
-        disabled: self,
-        title: self ? 'you cannot delete your own account' : 'delete ' + u.username,
+        disabled: locked,
+        title: self ? 'you cannot delete your own account'
+          : lastAdmin ? 'cannot delete the last administrator'
+          : 'delete ' + u.username,
       }, 'Delete');
-      if (!self) del.addEventListener('click', () => deleteUser(u.username));
+      if (!locked) del.addEventListener('click', () => deleteUser(u.username));
       return h('div', { class: 'aurow', dataset: { user: u.username || '' } },
         h('span', { class: 'au-name mono' }, u.username || ''),
         h('span', null, h('span', {

@@ -122,6 +122,13 @@ std::vector<Auth::UserInfo> Auth::users() const {
     return out;
 }
 
+bool Auth::hasAdmin() const {
+    std::lock_guard lk(mMu);
+    for (auto& [n, u] : mUsers)
+        if (u.role == "admin") return true;
+    return false;
+}
+
 bool Auth::deleteUser(const std::string& username, std::string& err) {
     std::lock_guard lk(mMu);
     auto it = mUsers.find(username);

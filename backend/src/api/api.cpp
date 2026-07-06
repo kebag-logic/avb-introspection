@@ -105,6 +105,14 @@ void Api::handleApi(HttpRequest& req, HttpResponse& resp,
     const std::string& m = req.method;
 
     // Unauthenticated endpoints (SE-1).
+    if (p == "/api/bootstrap" && m == "GET") {
+        // Fresh deployment with no admin yet? The login screen offers to
+        // create the first admin account when this is true.
+        JsonWriter w;
+        w.beginObj().kv("needs_admin", !mAuth.hasAdmin()).endObj();
+        resp.body = w.take();
+        return;
+    }
     if (p == "/api/register" && m == "POST") return handleRegister(req, resp);
     if (p == "/api/login" && m == "POST") return handleLogin(req, resp);
 
@@ -172,13 +180,20 @@ void Api::handleRegister(HttpRequest& req, HttpResponse& resp) {
     JsonValue body = JsonValue::parse(req.body, &perr);
     std::string username = body.getStr("username");
     std::string password = body.getStr("password");
+    // Bootstrap: with no admin yet (fresh deployment, no AVB_ADMIN_USER), the
+    // first account created IS the admin. Once an admin exists, registration
+    // creates regular users as before.
+    bool bootstrap = !mAuth.hasAdmin();
     std::string err;
-    if (!mAuth.registerUser(username, password, err)) {
+    if (!mAuth.registerUser(username, password, err,
+                            bootstrap ? "admin" : "user")) {
         jsonError(resp, err == "username already exists" ? 409 : 400, err);
         return;
     }
     resp.status = 201;
-    resp.body = "{\"ok\":true}";
+    JsonWriter w;
+    w.beginObj().kv("ok", true).kv("role", bootstrap ? "admin" : "user").endObj();
+    resp.body = w.take();
 }
 
 void Api::handleLogin(HttpRequest& req, HttpResponse& resp) {

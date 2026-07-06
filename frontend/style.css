@@ -381,6 +381,17 @@ body {
 .form-hint { color: var(--muted); font-size: 11px; margin: 8px 0 0; }
 .login-toggle { margin-top: 14px; text-align: center; }
 
+/* first-run banner: the account created now becomes the administrator */
+.login-boot {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: 6px;
+  padding: 9px 11px;
+  font-size: 12px;
+  line-height: 1.4;
+  margin-bottom: 12px;
+}
+
 /* ── home view ───────────────────────────────────────────── */
 
 .home {
@@ -452,32 +463,65 @@ body {
 
 .plist { display: flex; flex-direction: column; }
 
+/* library capture row — flex so the name truncates and the action buttons
+   always stay inside the panel box (never overflow the rounded border) */
 .prow {
-  display: grid;
-  grid-template-columns: auto minmax(120px, 1fr) 80px 150px auto auto auto;
-  gap: 10px;
-  align-items: center;
-  padding: 6px 4px;
-  border-top: 1px solid var(--border);
-}
-.prow-chk { width: 15px; height: 15px; cursor: pointer; accent-color: var(--accent); }
-.prow.in-folder { padding-left: 26px; }
-.prow.is-dragging { opacity: 0.5; }
-.prow-move { max-width: 130px; }
-
-/* library folder header — also the drop target when dragging a capture */
-.pfolder {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 6px 4px;
   border-top: 1px solid var(--border);
+  min-width: 0;
+}
+.prow-chk { flex: none; width: 15px; height: 15px; cursor: pointer; accent-color: var(--accent); }
+.prow-name { flex: 1 1 auto; min-width: 40px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prow-size { flex: none; width: 60px; text-align: right; }
+.prow-date { flex: none; width: 112px; white-space: nowrap; }
+.prow-move { flex: none; max-width: 116px; }
+.prow-analyze, .prow-del { flex: none; }
+.prow.is-dragging { opacity: 0.5; }
+/* tight panels: shed the least-important columns before the buttons squeeze */
+@media (max-width: 1080px) { .prow-date { display: none; } }
+@media (max-width: 940px)  { .prow-move { display: none; } }
+
+/* file-explorer breadcrumb (root › folder) */
+.pexp-crumb {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  padding: 2px 0 8px;
+}
+.pexp-seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 3px 8px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.pexp-seg:hover { background: var(--hover); color: var(--text); }
+.pexp-seg.is-cur { color: var(--text); font-weight: 600; cursor: default; }
+.pexp-sep { color: var(--muted); }
+
+/* folder entry (directory row) — click to open, drop target for moves */
+.pexp-folder {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-top: 1px solid var(--border);
   cursor: pointer;
   border-radius: 6px;
 }
-.pfolder:hover { background: var(--hover); }
-.pfolder-name { font-weight: 600; }
-.pfolder.is-drop, .panel-head.is-drop {
+.pexp-folder:hover { background: var(--hover); }
+.pexp-fname { font-weight: 600; }
+.pexp-folder.is-drop, .pexp-seg.is-drop, .panel-head.is-drop {
   background: color-mix(in srgb, var(--accent) 14%, transparent);
   box-shadow: inset 0 0 0 1px var(--accent);
   border-radius: 6px;

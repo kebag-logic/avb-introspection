@@ -35,6 +35,9 @@ public:
 
     std::string roleOf(const std::string& username) const;
     std::vector<UserInfo> users() const;
+    /** True once at least one admin account exists. False = fresh deployment
+     *  that still needs its first admin (bootstrap). */
+    bool hasAdmin() const;
     /** Deletes the user and revokes their tokens. Refuses to remove the
      *  last admin. */
     bool deleteUser(const std::string& username, std::string& err);

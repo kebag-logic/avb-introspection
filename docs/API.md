@@ -6,8 +6,8 @@ JSON (`application/json`) unless stated otherwise.
 
 ## Authentication
 
-- `POST /api/register` and `POST /api/login` are the only unauthenticated API
-  endpoints. Static files are served without auth.
+- `GET /api/bootstrap`, `POST /api/register` and `POST /api/login` are the
+  only unauthenticated API endpoints. Static files are served without auth.
 - Every other `/api/*` call requires `Authorization: Bearer <token>`.
 - The WebSocket endpoint takes the token as a query parameter (browsers
   cannot set headers on WS): `/api/ws?token=<token>&session=<id>`.
@@ -15,11 +15,19 @@ JSON (`application/json`) unless stated otherwise.
   401 = missing/bad token, 403 = forbidden, 404 = unknown object,
   409 = conflict, 400 = bad request.
 
+### GET /api/bootstrap
+
+`{"needs_admin": true}` on a fresh deployment with no admin account yet
+(no `AVB_ADMIN_USER` provisioned) — the login screen uses this to offer
+first-time admin creation. `false` once any admin exists.
+
 ### POST /api/register
 
 Request: `{"username": "alex", "password": "secret1234"}` (username 3–32
 chars `[a-zA-Z0-9_.-]`, password ≥ 8 chars).
-Response 201: `{"ok": true}`. 409 if the username exists.
+Response 201: `{"ok": true, "role": "user" | "admin"}`. 409 if the username
+exists. **Bootstrap:** while no admin exists, the first account created is
+made `admin`; afterwards new accounts are regular `user`s.
 
 ### POST /api/login
 
