@@ -895,10 +895,13 @@ let smFmtTime = (t) => String(t);
 let smJumpToPacket = null;
 let smEdgePop = null;   /* the single open edge-trigger popover, if any */
 
+let smEdgePopDoc = null;   /* document holding the popover (may be a popup window's) */
 function closeEdgePop() {
   if (smEdgePop) { smEdgePop.remove(); smEdgePop = null; }
-  document.removeEventListener('mousedown', onEdgePopAway, true);
-  document.removeEventListener('keydown', onEdgePopKey, true);
+  const d = smEdgePopDoc || document;
+  d.removeEventListener('mousedown', onEdgePopAway, true);
+  d.removeEventListener('keydown', onEdgePopKey, true);
+  smEdgePopDoc = null;
 }
 function onEdgePopAway(ev) { if (smEdgePop && !smEdgePop.contains(ev.target)) closeEdgePop(); }
 function onEdgePopKey(ev) { if (ev.key === 'Escape') closeEdgePop(); }
@@ -914,7 +917,8 @@ function showEdgeTriggers(ev, edge, triggers, def) {
     (typeof t.n === 'number' && t.n > 0 && smJumpToPacket)
       ? h('button', {
           class: 'linklike mono smpop-pkt', type: 'button',
-          onclick: () => { const n = t.n; closeEdgePop(); smJumpToPacket(n); },
+          /* focus the main window: the jump may be clicked from a popup */
+          onclick: () => { const n = t.n; closeEdgePop(); smJumpToPacket(n); window.focus(); },
         }, 'pkt ' + t.n)
       : h('span', { class: 'dim mono smpop-nopkt',
           title: 'not tied to a single packet (timer / derived event)' }, 'timer')));
@@ -927,18 +931,23 @@ function showEdgeTriggers(ev, edge, triggers, def) {
       'triggering event: ', h('span', { class: 'mono' }, evName)) : null,
     triggers.length ? h('div', { class: 'smpop-rows' }, rows)
       : h('div', { class: 'smpop-empty dim small' }, 'not observed in this capture'));
-  document.body.appendChild(pop);
+  /* anchor in whichever document the click happened in (inline panel OR a
+     per-device popup window) */
+  const doc = (ev && ev.target && ev.target.ownerDocument) || document;
+  const win = doc.defaultView || window;
+  doc.body.appendChild(pop);
   smEdgePop = pop;
+  smEdgePopDoc = doc;
   const r = pop.getBoundingClientRect(), pad = 8;
   const cx = ev && ev.clientX ? ev.clientX : 60, cy = ev && ev.clientY ? ev.clientY : 60;
   let x = cx + 12, y = cy + 8;
-  if (x + r.width + pad > window.innerWidth) x = window.innerWidth - r.width - pad;
-  if (y + r.height + pad > window.innerHeight) y = cy - r.height - 8;
+  if (x + r.width + pad > win.innerWidth) x = win.innerWidth - r.width - pad;
+  if (y + r.height + pad > win.innerHeight) y = cy - r.height - 8;
   pop.style.left = Math.max(pad, x) + 'px';
   pop.style.top = Math.max(pad, y) + 'px';
   setTimeout(() => {
-    document.addEventListener('mousedown', onEdgePopAway, true);
-    document.addEventListener('keydown', onEdgePopKey, true);
+    doc.addEventListener('mousedown', onEdgePopAway, true);
+    doc.addEventListener('keydown', onEdgePopKey, true);
   }, 0);
 }
 
@@ -2531,6 +2540,7 @@ function sessionView(app, id) {
   let topoGraphEl = null;    /* the graph container, reused to redraw edges on scrub */
   let topoAsofSlot = null;   /* header "as of …" chip, refreshed on scrub */
   let topoNetHost = null;    /* always-on network-machines section, re-timed on scrub */
+  let topoResetBtn = null;   /* "Reset layout" — enabled once a node was dragged */
 
   function selectEvent(i, opts) {
     opts = opts || {};
@@ -3524,6 +3534,19 @@ function sessionView(app, id) {
         add('stream', r.talker_mac, l.mac, shortStream(r.stream_id));
       }
     }
+    /* Milan bindings that are not (yet) streaming: a sink bound to a talker
+       (probing or settled, as of T) draws dotted, so the relationship between
+       the machines involved stays visible even when no stream flows */
+    for (const s of st.milan_sinks || []) {
+      if (isZeroId(s.bound_talker) || isZeroId(s.listener_entity)) continue;
+      const cur = liveAtN(s.history, s.state, T).current || '';
+      if (!cur || cur === 'UNBOUND') continue;
+      const from = model.entityToMac.get(tnorm(s.bound_talker));
+      const to = model.entityToMac.get(tnorm(s.listener_entity));
+      /* skip if a live stream edge already joins the pair */
+      if (seen.has('stream|' + from + '|' + to + '|' + shortStream(s.stream_id))) continue;
+      add('binding', from, to, 'bound · ' + cur);
+    }
     return edges;
   }
 
@@ -3535,6 +3558,62 @@ function sessionView(app, id) {
 
   function selectTopoNode(mac) { topoSelMac = mac; topoSelPort = null; if (!updateTopoSelection()) renderTopologyTab(); }
   function selectTopoPort(mac, port) { topoSelMac = mac; topoSelPort = port; if (!updateTopoSelection()) renderTopologyTab(); }
+
+  /* ── user-arranged node layout (persisted per session) ── */
+  const TOPO_POS_KEY = 'avb.topoPos.' + id;
+  function topoLoadPos() {
+    try { return JSON.parse(localStorage.getItem(TOPO_POS_KEY) || '{}') || {}; }
+    catch (err) { return {}; }
+  }
+  function topoSavePos(mac, x, y) {
+    const all = topoLoadPos();
+    all[mac] = { x: Math.round(x), y: Math.round(y) };
+    try { localStorage.setItem(TOPO_POS_KEY, JSON.stringify(all)); } catch (err) { /* quota */ }
+    if (topoResetBtn) topoResetBtn.disabled = false;
+  }
+  function topoHasSavedPos() { return Object.keys(topoLoadPos()).length > 0; }
+  function topoResetPos() {
+    localStorage.removeItem(TOPO_POS_KEY);
+    renderTopologyTab();
+  }
+
+  /* drag a device card to rearrange the graph; edges follow live and the
+     position sticks (localStorage, per session). A real drag suppresses the
+     click so it doesn't also change the selection. */
+  function topoMakeDraggable(el, n) {
+    el.addEventListener('pointerdown', (ev) => {
+      if (ev.button !== 0 || ev.target.closest('button')) return;
+      const startX = ev.clientX, startY = ev.clientY;
+      const origL = el.offsetLeft, origT = el.offsetTop;
+      let moved = false, raf = 0;
+      const edges = topoModel ? buildTopoEdges(topoModel) : [];
+      const redraw = () => {
+        raf = 0;
+        if (topoGraphEl && topoNodeEls) drawTopoEdges(topoGraphEl, topoNodeEls, edges);
+      };
+      const move = (e2) => {
+        const dx = e2.clientX - startX, dy = e2.clientY - startY;
+        if (!moved && Math.hypot(dx, dy) < 5) return;   /* click tolerance */
+        moved = true;
+        el.classList.add('is-dragging');
+        el.style.left = Math.max(0, origL + dx) + 'px';
+        el.style.top = Math.max(0, origT + dy) + 'px';
+        if (!raf) raf = requestAnimationFrame(redraw);
+      };
+      const up = () => {
+        window.removeEventListener('pointermove', move);
+        window.removeEventListener('pointerup', up);
+        if (!moved) return;
+        el.classList.remove('is-dragging');
+        el._dragged = true;   /* consumed by the click handler */
+        topoSavePos(n.mac, el.offsetLeft, el.offsetTop);
+        if (raf) cancelAnimationFrame(raf);
+        redraw();
+      };
+      window.addEventListener('pointermove', move);
+      window.addEventListener('pointerup', up);
+    });
+  }
 
   /* Selection-only update: the graph layout never depends on selection, so a
      click just re-highlights the nodes/ports and swaps the machines panel —
@@ -3568,7 +3647,7 @@ function sessionView(app, id) {
     const el = h('div', {
       class: 'topo-node' + (selected ? ' is-selected' : ''),
       dataset: { mac: n.mac }, role: 'button', tabindex: '0',
-      title: n.label + ' — ' + (n.synthetic ? 'inferred bridge' : n.mac),
+      title: n.label + ' — ' + (n.synthetic ? 'inferred bridge' : n.mac) + ' · drag to reposition',
     },
       h('div', { class: 'topo-node-name' }, n.label),
       h('div', { class: 'topo-node-mac mono' }, n.synthetic ? 'inferred' : n.mac),
@@ -3578,10 +3657,14 @@ function sessionView(app, id) {
         : null,
       portChips.length ? h('div', { class: 'topo-ports' }, portChips) : null,
     );
-    el.addEventListener('click', () => selectTopoNode(n.mac));
+    el.addEventListener('click', () => {
+      if (el._dragged) { el._dragged = false; return; }   /* drop, not a select */
+      selectTopoNode(n.mac);
+    });
     el.addEventListener('keydown', (ev) => {
       if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); selectTopoNode(n.mac); }
     });
+    topoMakeDraggable(el, n);
     return el;
   }
 
@@ -3951,65 +4034,72 @@ function sessionView(app, id) {
         + (n.packets ? ' (' + fmtInt(n.packets) + ' packets observed).' : '.')));
   }
 
-  /* ── floating per-device machine windows ──────────────────────────────
-     Each window shows one device's reconstructed machines and re-overlays
-     on every cursor move (renderMachineWins is called from selectEvent /
-     clearSelection / loadState / loadInfo), whatever tab is open. */
-  const machineWins = new Map();   /* mac -> { el, body } */
-  let machineWinZ = 200;
+  /* ── per-device machine windows (real browser popups) ─────────────────
+     Each device opens in its own browser window (window.open, same origin,
+     sharing this page's stylesheet). The opener owns the rendering: every
+     cursor move re-renders each popup's panel (renderMachineWins is called
+     from selectEvent / clearSelection / loadState / loadInfo), so the
+     machines keep tracking the timeline wherever the windows sit. */
+  const machineWins = new Map();   /* mac -> { win, body } */
 
   function openMachineWindow(mac) {
     const existing = machineWins.get(mac);
-    if (existing) { existing.el.style.zIndex = ++machineWinZ; return; }
-    const body = h('div', { class: 'mwin-body' });
-    const titleSpan = h('span', { class: 'mwin-title' });
-    const closeBtn = h('button', {
-      class: 'btn btn-ghost btn-sm', type: 'button', title: 'close',
-    }, '✕');
-    const headBar = h('div', { class: 'mwin-head' },
-      titleSpan, h('span', { class: 'toolbar-spacer' }), closeBtn);
-    const el = h('div', { class: 'mwin' }, headBar, body);
-    /* cascade from the top-right, away from the events table */
+    if (existing && existing.win && !existing.win.closed) { existing.win.focus(); return; }
+    if (existing) machineWins.delete(mac);
     const idx = machineWins.size;
-    el.style.left = Math.max(8, window.innerWidth - 660 - idx * 36) + 'px';
-    el.style.top = Math.min(window.innerHeight - 240, 64 + idx * 36) + 'px';
-    el.style.zIndex = ++machineWinZ;
-    closeBtn.addEventListener('click', () => { machineWins.delete(mac); el.remove(); });
-    el.addEventListener('pointerdown', () => { el.style.zIndex = ++machineWinZ; });
-    headBar.addEventListener('pointerdown', (ev) => {
-      if (ev.target.closest('button')) return;
-      ev.preventDefault();
-      const r = el.getBoundingClientRect();
-      const dx = ev.clientX - r.left, dy = ev.clientY - r.top;
-      const move = (e2) => {
-        el.style.left = Math.max(0, Math.min(window.innerWidth - 80, e2.clientX - dx)) + 'px';
-        el.style.top = Math.max(0, Math.min(window.innerHeight - 40, e2.clientY - dy)) + 'px';
-      };
-      const up = () => {
-        window.removeEventListener('pointermove', move);
-        window.removeEventListener('pointerup', up);
-      };
-      window.addEventListener('pointermove', move);
-      window.addEventListener('pointerup', up);
+    const w = window.open('', 'avb-mwin-' + id + '-' + mac.replace(/[^a-z0-9]/gi, ''),
+      'popup=yes,width=720,height=820,left=' + (90 + idx * 44) + ',top=' + (60 + idx * 44));
+    if (!w) {
+      toast('popup blocked — allow popups for this site to open machine windows', 'error');
+      return;
+    }
+    const doc = w.document;
+    doc.head.replaceChildren();
+    const meta = doc.createElement('meta');
+    meta.setAttribute('charset', 'utf-8');
+    doc.head.appendChild(meta);
+    /* same-origin stylesheet: the popup renders with the app's exact look */
+    const link = doc.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = new URL((BASE || '') + '/style.css', location.href).href;
+    doc.head.appendChild(link);
+    doc.body.className = 'mwin-doc';
+    doc.body.replaceChildren();
+    const body = doc.createElement('div');
+    body.className = 'mwin-body';
+    doc.body.appendChild(body);
+    w.addEventListener('pagehide', () => {
+      const e = machineWins.get(mac);
+      if (e && e.win === w) machineWins.delete(mac);
     });
-    machineWins.set(mac, { el, body, title: titleSpan });
-    viewRoot.appendChild(el);
+    machineWins.set(mac, { win: w, body });
     renderMachineWins();
   }
 
-  /* re-overlay every open window to the cursor, preserving scroll */
+  function closeMachineWins() {
+    for (const [, wm] of machineWins) { try { wm.win.close(); } catch (err) { /* gone */ } }
+    machineWins.clear();
+  }
+  /* popups don't die with the tab on their own */
+  window.addEventListener('pagehide', closeMachineWins);
+
+  /* re-render every open popup to the cursor, preserving its scroll */
   function renderMachineWins() {
+    if (!machineWins.size) return;
+    for (const [mac, wm] of [...machineWins]) {
+      if (!wm.win || wm.win.closed) machineWins.delete(mac);
+    }
     if (!machineWins.size || !S.stateData || !S.infoData) return;
     const model = buildTopologyModel();
-    for (const [mac, w] of machineWins) {
+    for (const [mac, wm] of machineWins) {
       const n = model.devices.get(mac);
-      w.title.replaceChildren(
-        (n && n.label) || mac, ' ',
-        h('span', { class: 'mono dim small' }, n && n.label !== mac ? mac : ''));
-      const top = w.body.scrollTop;
-      w.body.replaceChildren(n ? topoMachinesPanel(n, { win: true })
-        : h('div', { class: 'empty small' }, 'Device ' + mac + ' not observed.'));
-      w.body.scrollTop = top;
+      try {
+        wm.win.document.title = ((n && n.label) || mac) + ' — state machines';
+        const y = wm.win.scrollY || 0;
+        wm.body.replaceChildren(n ? topoMachinesPanel(n, { win: true })
+          : h('div', { class: 'empty small' }, 'Device ' + mac + ' not observed.'));
+        wm.win.scrollTo(0, y);
+      } catch (err) { machineWins.delete(mac); }
     }
   }
 
@@ -4057,13 +4147,14 @@ function sessionView(app, id) {
       const b = topoBorderPt(B, A.cx, A.cy);
       const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
       const dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy) || 1;
-      const off = e.kind === 'stream' ? 18 : 0;   /* bow streams off any sync line */
+      /* bow streams/bindings off any sync line (and off each other) */
+      const off = e.kind === 'stream' ? 18 : e.kind === 'binding' ? 32 : 0;
       const cx = mx - dy / len * off, cy = my + dx / len * off;
-      const isSync = e.kind === 'sync';
+      const cls = e.kind === 'sync' ? 'is-sync' : e.kind === 'binding' ? 'is-binding' : 'is-stream';
       svgEl.appendChild(svg('path', {
-        class: 'topo-edge ' + (isSync ? 'is-sync' : 'is-stream'),
+        class: 'topo-edge ' + cls,
         d: 'M ' + a.x + ' ' + a.y + ' Q ' + cx + ' ' + cy + ' ' + b.x + ' ' + b.y,
-        'marker-end': 'url(#' + (isSync ? 'topo-arr-sync' : 'topo-arr-stream') + ')',
+        'marker-end': 'url(#' + (e.kind === 'sync' ? 'topo-arr-sync' : 'topo-arr-stream') + ')',
       }));
       if (e.label) {
         const lx = off ? cx : mx, ly = off ? cy : my;
@@ -4073,7 +4164,7 @@ function sessionView(app, id) {
           class: 'topo-elabel-bg', x: lx - w / 2, y: ly - 7, width: w, height: 14, rx: 3,
         }));
         svgEl.appendChild(svg('text', {
-          class: 'topo-elabel ' + (isSync ? 'is-sync' : 'is-stream'),
+          class: 'topo-elabel ' + cls,
           x: lx, y: ly, 'text-anchor': 'middle', 'dominant-baseline': 'middle',
         }, txt));
       }
@@ -4084,7 +4175,9 @@ function sessionView(app, id) {
   function topoLegend() {
     return h('div', { class: 'topo-legend' },
       h('span', { class: 'tl-item' }, h('span', { class: 'tl-line tl-sync' }), 'gPTP sync (master → slave)'),
-      h('span', { class: 'tl-item' }, h('span', { class: 'tl-line tl-stream' }), 'stream (talker → listener)'));
+      h('span', { class: 'tl-item' }, h('span', { class: 'tl-line tl-stream' }), 'stream (talker → listener)'),
+      h('span', { class: 'tl-item' }, h('span', { class: 'tl-line tl-binding' }), 'ACMP binding (bound, no stream)'),
+      h('span', { class: 'tl-item dim' }, 'drag a device card to rearrange'));
   }
 
   function renderTopologyTab() {
@@ -4131,6 +4224,15 @@ function sessionView(app, id) {
       n._x = TOPO_PAD + c * TOPO_DX;
       n._y = TOPO_PAD + r * TOPO_DY;
     }));
+    /* user-arranged positions win over the automatic tier layout */
+    const savedPos = topoLoadPos();
+    for (const n of nodes) {
+      const p = savedPos[n.mac];
+      if (p && typeof p.x === 'number' && typeof p.y === 'number') {
+        n._x = Math.max(0, p.x);
+        n._y = Math.max(0, p.y);
+      }
+    }
 
     const graph = h('div', { class: 'topo-graph' });
     const nodeEls = new Map();
@@ -4151,12 +4253,20 @@ function sessionView(app, id) {
 
     const asofSlot = h('span', { class: 'topo-asof-slot' }, asOfBadge());
     topoAsofSlot = asofSlot;
+    const resetBtn = h('button', {
+      class: 'btn btn-ghost btn-sm', type: 'button',
+      title: 'discard the manual node arrangement and go back to the automatic layout',
+      onclick: topoResetPos,
+    }, 'Reset layout');
+    resetBtn.disabled = !topoHasSavedPos();
+    topoResetBtn = resetBtn;   /* enabled by the first drag */
     inspBody.replaceChildren(h('div', { class: 'insp-scroll' },
       h('div', { class: 'state-actions' },
         h('span', { class: 'dim small' },
-          'Observed network topology — click a device or port for its state machines; links show streams/sync flowing '),
+          'Observed network topology — click a device or port for its state machines; drag cards to rearrange; links show streams/sync flowing '),
         asofSlot,
-        h('span', { class: 'toolbar-spacer' })),
+        h('span', { class: 'toolbar-spacer' }),
+        resetBtn),
       netHost,
       topoLegend(),
       h('div', { class: 'sm-scroll topo-scroll' }, graph),
@@ -5464,6 +5574,8 @@ function sessionView(app, id) {
       clearTimeout(searchTimer);
       clearInterval(pingTimer);
       if (ws) { try { ws.close(); } catch (err) { /* ignore */ } ws = null; }
+      closeMachineWins();
+      window.removeEventListener('pagehide', closeMachineWins);
       document.removeEventListener('keydown', onKey);
       resizeObs.disconnect();
       if (TL.raf) cancelAnimationFrame(TL.raf);

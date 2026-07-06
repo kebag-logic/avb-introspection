@@ -833,42 +833,10 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   width: 2px;
 }
 
-/* floating per-device state-machine window (tracks the timeline cursor) */
-.mwin {
-  position: fixed;
-  width: min(620px, 92vw);
-  height: min(540px, 84vh);
-  min-width: 320px;
-  min-height: 180px;
-  display: flex;
-  flex-direction: column;
-  background: var(--panel);
-  border: 1px solid var(--border-strong);
-  border-radius: 10px;
-  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.55);
-  resize: both;
-  overflow: hidden;
-}
-.mwin-head {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 6px 5px 12px;
-  border-bottom: 1px solid var(--border-strong);
-  cursor: grab;
-  user-select: none;
-  background: color-mix(in srgb, var(--accent) 7%, var(--panel));
-}
-.mwin-head:active { cursor: grabbing; }
-.mwin-title { font-weight: 600; font-size: 12.5px; }
-.mwin-title .mono { font-weight: 400; }
-.mwin-body {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding: 8px 10px;
-}
+/* per-device state-machine popup window (real browser window opened via
+   window.open; shares this stylesheet, tracks the opener's timeline cursor) */
+body.mwin-doc { padding: 10px 14px; }
+body.mwin-doc .mwin-body { max-width: 900px; }
 
 /* events table */
 
@@ -1758,6 +1726,7 @@ input.marker-label { width: 100%; }
   display: inline-block;
 }
 .topo-legend .tl-stream { border-top-style: dashed; border-top-color: var(--c-acmp); }
+.topo-legend .tl-binding { border-top-style: dotted; border-top-color: var(--c-acmp); opacity: 0.75; }
 
 /* the scrollable graph surface */
 .topo-scroll { padding: 2px 0 8px; }
@@ -1777,6 +1746,12 @@ input.marker-label { width: 100%; }
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 .topo-node:hover { border-color: var(--accent); }
+.topo-node.is-dragging {
+  cursor: grabbing;
+  opacity: 0.92;
+  z-index: 3;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.55);
+}
 .topo-node.is-selected {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent), 0 4px 14px rgba(0, 0, 0, 0.5);
@@ -1830,10 +1805,11 @@ input.marker-label { width: 100%; }
 .topo-edge { fill: none; }
 .topo-edge.is-sync { stroke: var(--c-gptp); stroke-width: 1.8; }
 .topo-edge.is-stream { stroke: var(--c-acmp); stroke-width: 1.6; stroke-dasharray: 6 4; }
+.topo-edge.is-binding { stroke: var(--c-acmp); stroke-width: 1.4; stroke-dasharray: 2 5; opacity: 0.8; }
 .topo-elabel-bg { fill: var(--panel); opacity: 0.94; stroke: var(--border); stroke-width: 0.6; }
 .topo-elabel { font: 600 9px var(--mono); }
 .topo-elabel.is-sync { fill: var(--c-gptp); }
-.topo-elabel.is-stream { fill: var(--c-acmp); }
+.topo-elabel.is-stream, .topo-elabel.is-binding { fill: var(--c-acmp); }
 
 /* per-device machines panel below the graph */
 .topo-panel-host { display: block; }
