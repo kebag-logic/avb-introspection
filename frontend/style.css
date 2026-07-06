@@ -1032,6 +1032,11 @@ body.mwin-doc .mwin-body { max-width: 900px; }
   background: rgba(106, 176, 243, 0.14);
   box-shadow: inset 2px 0 0 var(--accent);
 }
+/* a selected row that the active filter would otherwise hide — a dashed
+   left edge signals it's out of the current filter but shown because linked */
+.erow.off-filter { box-shadow: inset 2px 0 0 var(--muted); }
+.erow.off-filter.sel { box-shadow: inset 2px 0 0 var(--accent); }
+.erow.off-filter .c-idx::after { content: ' •'; color: var(--muted); }
 .erow > span { overflow: hidden; text-overflow: ellipsis; }
 .c-idx { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
 .etable-head .c-idx { text-align: right; }

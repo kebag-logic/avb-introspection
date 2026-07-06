@@ -2257,6 +2257,7 @@ function sessionView(app, id) {
     kindOn: new Set(KINDS),
     query: '',
     selected: -1,            /* selected event index i, or -1 */
+    forced: -1,              /* event index shown despite the filter (selected) */
     lonePacket: 0,           /* packet number shown without a selected event */
     tab: 'inspect',          /* 'inspect' | 'state' | 'notes' | 'markers' | 'info' | 'machines' | 'topology' */
     stateData: null,
@@ -2473,6 +2474,17 @@ function sessionView(app, id) {
       const e = S.events[i];
       if (e && passes(e)) out.push(i);
     }
+    /* Keep the selected event visible even when the active filter would hide
+       it — otherwise following a "pkt N" / "go to causing packet" link selects
+       an event whose row is filtered out, and the reference appears to vanish
+       from the table. Force-include it at its correct (ascending) position. */
+    S.forced = -1;
+    if (S.selected >= 0 && S.events[S.selected] && !passes(S.events[S.selected])) {
+      let lo = 0, hi = out.length;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (out[mid] < S.selected) lo = mid + 1; else hi = mid; }
+      out.splice(lo, 0, S.selected);
+      S.forced = S.selected;
+    }
     S.filtered = out;
     updateCounts();
     scheduleTable();
@@ -2548,7 +2560,9 @@ function sessionView(app, id) {
       let cls = 'erow';
       if (i === S.selected) cls += ' sel';
       if (e.kind === 'error') cls += ' iserr';
+      if (i === S.forced) cls += ' off-filter';   /* shown despite the filter */
       let title = e.summary || '';
+      if (i === S.forced) title = '(hidden by the active filter — shown because it is selected)  ' + title;
       const si = srcOf(e.n);
       if (si >= 0) {
         cls += ' has-src src-c' + (si % 6);
@@ -2845,8 +2859,12 @@ function sessionView(app, id) {
     opts = opts || {};
     S.selected = i;
     S.lonePacket = 0;
-    scheduleTable();
     const e = S.events[i];
+    /* recompute the filtered set when the target is hidden by the active
+       filter (so it's force-included) or when a previously force-included row
+       must now drop out; otherwise a cheap row re-render is enough */
+    if ((e && !passes(e)) || S.forced >= 0) applyFilters();
+    else scheduleTable();
     if (e) tlCenterOn(e.ts); /* keep the selection visible in the timeline */
     tlSchedule();
     if (opts.scroll) scrollToSelected();
@@ -2862,9 +2880,11 @@ function sessionView(app, id) {
 
   function clearSelection() {
     if (S.selected < 0 && !S.lonePacket) return;
+    const wasForced = S.forced >= 0;
     S.selected = -1;
     S.lonePacket = 0;
-    scheduleTable();
+    if (wasForced) applyFilters();   /* drop the force-included row */
+    else scheduleTable();
     tlSchedule();
     /* back to the final observed state on the time-tracking views */
     if (S.tab === 'inspect') renderInspector();
