@@ -234,6 +234,8 @@ void Api::handlePcapsPost(HttpRequest& req, HttpResponse& resp) {
     if (req.body.empty()) return jsonError(resp, 400, "empty upload");
     std::string name = req.queryParam("name");
     if (name.empty()) name = "capture.pcap";
+    // Land the upload in the folder the user is viewing ("" = library root).
+    std::string folder = req.queryParam("folder");
 
     std::string tmp = mStore.dataDir() + "/.upload-" +
                       std::to_string(mUploadSeq.fetch_add(1)) + ".tmp";
@@ -274,13 +276,14 @@ void Api::handlePcapsPost(HttpRequest& req, HttpResponse& resp) {
     if (!ok) return jsonError(resp, 400, "not a valid capture: " + perr);
 
     std::string err;
-    std::string id = mStore.addPcap(name, bytes, err);
-    if (id.empty()) return jsonError(resp, 500, err);
+    std::string id = mStore.addPcap(name, bytes, folder, err);
+    if (id.empty())
+        return jsonError(resp, err.rfind("folder name", 0) == 0 ? 400 : 500, err);
 
     resp.status = 201;
     JsonWriter w;
     w.beginObj().kv("id", id).kv("name", name).kv("size", (uint64_t)bytes.size())
-        .endObj();
+        .kv("folder", folder).endObj();
     resp.body = w.take();
 }
 

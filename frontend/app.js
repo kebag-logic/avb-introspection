@@ -717,13 +717,15 @@ function homeView(app) {
   async function uploadFile(file) {
     uploadBtn.disabled = true;
     uploadShow(file.name);
+    const folder = pcapCwd;   /* land the upload in the folder being viewed */
     try {
-      await uploadWithProgress('/api/pcaps?name=' + encodeURIComponent(file.name),
+      await uploadWithProgress('/api/pcaps?name=' + encodeURIComponent(file.name)
+        + (folder ? '&folder=' + encodeURIComponent(folder) : ''),
         file, 'application/octet-stream',
         (frac, sent, total, done) => uploadProgress(frac, done));
       uploadHide();
-      toast('uploaded ' + file.name);
-      pcapCwd = '';   /* uploads land in the root — show it so it's visible */
+      toast(folder ? 'uploaded ' + file.name + ' → ' + folder : 'uploaded ' + file.name);
+      /* stay in the current folder — the file landed here, so it's visible */
       refresh();
     } catch (err) {
       uploadError(file.name, err.message);   /* stays until dismissed / next upload */

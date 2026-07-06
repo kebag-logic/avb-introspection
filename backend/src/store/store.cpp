@@ -27,6 +27,16 @@ std::string Store::nowIso8601() {
     return buf;
 }
 
+namespace {
+// Library folder names: 1-64 chars, flat (no '/'), not a dotfile.
+bool validFolderName(const std::string& name) {
+    if (name.empty() || name.size() > 64 || name[0] == '.') return false;
+    for (char c : name)
+        if (c == '/' || c == '\\' || (unsigned char)c < 0x20) return false;
+    return true;
+}
+} // namespace
+
 bool Store::init(const std::string& dataDir, std::string& err) {
     mDataDir = dataDir;
     if (::mkdir(dataDir.c_str(), 0755) != 0 && errno != EEXIST) {
@@ -158,7 +168,11 @@ bool Store::save(std::string& err) {
 }
 
 std::string Store::addPcap(const std::string& name, const std::string& bytes,
-                           std::string& err) {
+                           const std::string& folder, std::string& err) {
+    if (!folder.empty() && !validFolderName(folder)) {
+        err = "folder name must be 1-64 chars without '/'";
+        return "";
+    }
     std::lock_guard lk(mMu);
     std::string id = "p" + std::to_string(mNextPcap);
     std::string path = pcapPathLocked(id);
@@ -175,7 +189,15 @@ std::string Store::addPcap(const std::string& name, const std::string& bytes,
         }
     }
     mNextPcap++;
-    mPcaps.push_back({id, name, nowIso8601(), bytes.size(), ""});
+    mPcaps.push_back({id, name, nowIso8601(), bytes.size(), folder});
+    // Uploading into a not-yet-explicit folder creates it (so it survives the
+    // pcap being moved back out).
+    if (!folder.empty() &&
+        std::find(mPcapFolders.begin(), mPcapFolders.end(), folder) ==
+            mPcapFolders.end()) {
+        mPcapFolders.push_back(folder);
+        std::sort(mPcapFolders.begin(), mPcapFolders.end());
+    }
     if (!save(err)) {
         std::remove(path.c_str());
         mPcaps.pop_back();
@@ -201,15 +223,6 @@ bool Store::removePcap(const std::string& id, std::string& err) {
 }
 
 // -------------------------------------------------------- library folders -
-
-namespace {
-bool validFolderName(const std::string& name) {
-    if (name.empty() || name.size() > 64 || name[0] == '.') return false;
-    for (char c : name)
-        if (c == '/' || c == '\\' || (unsigned char)c < 0x20) return false;
-    return true;
-}
-} // namespace
 
 std::vector<std::string> Store::pcapFolders() const {
     std::lock_guard lk(mMu);

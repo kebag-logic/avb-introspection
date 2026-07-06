@@ -104,7 +104,7 @@ Response: `{"pcaps": [{"id": "p1", "name": "trace.pcap", "size": 12345,
 `folder` is the library folder the capture is filed in ("" = root; flat).
 `folders` lists every folder (explicitly created or in use).
 
-### POST /api/pcaps?name=trace.pcap
+### POST /api/pcaps?name=trace.pcap[&folder=certs]
 
 Body: raw pcap/pcapng bytes (`application/octet-stream`), optionally
 compressed (gzip, xz, zstd, bzip2, lz4, lzip, compress, or a `.zip`
@@ -112,9 +112,12 @@ archive — detected by magic bytes and inflated server-side through the
 matching system tool; for a zip the pcap/pcapng entry is extracted). The
 stored capture and reported `size` are the decompressed bytes, and a known
 compression suffix is stripped from `name`. `POST /api/sessions` with
-`path` accepts compressed files the same way.
-Response 201: `{"id": "p1", "name": "trace.pcap", "size": 12345}`.
-400 if the file is not a valid pcap/pcapng (after decompression).
+`path` accepts compressed files the same way. The optional `folder` query
+param files the upload straight into that library folder (created if
+needed; omit or leave empty for the root).
+Response 201: `{"id": "p1", "name": "trace.pcap", "size": 12345, "folder": "certs"}`.
+400 if the file is not a valid pcap/pcapng (after decompression) or the
+folder name is invalid.
 
 ### PUT /api/pcaps/{id}
 

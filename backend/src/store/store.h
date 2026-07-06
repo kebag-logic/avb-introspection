@@ -50,9 +50,10 @@ public:
     const std::string& dataDir() const { return mDataDir; }
     std::string usersFile() const { return mDataDir + "/users.json"; }
 
-    /** Persist an uploaded pcap; returns its id ("" on error). */
+    /** Persist an uploaded pcap into `folder` ("" = root); returns its id
+     *  ("" on error). A new folder name is created implicitly. */
     std::string addPcap(const std::string& name, const std::string& bytes,
-                        std::string& err);
+                        const std::string& folder, std::string& err);
     std::vector<PcapMeta> pcaps() const;
     bool hasPcap(const std::string& id) const;
     std::string pcapPath(const std::string& id) const;
