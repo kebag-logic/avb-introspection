@@ -1138,6 +1138,8 @@ let smUid = 0;        /* per-diagram id prefix so <marker> ids stay unique */
    format times and jump to a triggering packet (both live in that closure) */
 let smFmtTime = (t) => String(t);
 let smJumpToPacket = null;
+let smJumpToEvent = null;    /* jump to a transition event by index (sessionView) */
+let smTransEventIdx = null;  /* map a trigger transition -> event index, or -1 */
 let smEdgePop = null;   /* the single open edge-trigger popover, if any */
 
 let smEdgePopDoc = null;   /* document holding the popover (may be a popup window's) */
@@ -1151,22 +1153,35 @@ function closeEdgePop() {
 function onEdgePopAway(ev) { if (smEdgePop && !smEdgePop.contains(ev.target)) closeEdgePop(); }
 function onEdgePopKey(ev) { if (ev.key === 'Escape') closeEdgePop(); }
 
+/* the jump control for one trigger row: its causing packet ("pkt N"), else the
+   derived transition event itself ("◆ event"), else a static "timer" label */
+function edgeTrigLink(t) {
+  if (typeof t.n === 'number' && t.n > 0 && smJumpToPacket)
+    return h('button', {
+      class: 'linklike mono smpop-pkt', type: 'button',
+      /* focus the main window: the jump may be clicked from a popup */
+      onclick: () => { const n = t.n; closeEdgePop(); smJumpToPacket(n); window.focus(); },
+    }, 'pkt ' + t.n);
+  const ei = smTransEventIdx ? smTransEventIdx(t) : -1;
+  if (ei >= 0 && smJumpToEvent)
+    return h('button', {
+      class: 'linklike mono smpop-pkt', type: 'button',
+      title: 'go to this derived state event in the table / timeline',
+      onclick: () => { closeEdgePop(); smJumpToEvent(ei); window.focus(); },
+    }, '◆ event');
+  return h('span', { class: 'dim mono smpop-nopkt',
+    title: 'not tied to a single packet (timer / derived event)' }, 'timer');
+}
+
 /* popover listing every observed event that drove one transition (from→to),
-   each with its time and a jump-to-packet link */
+   each with its time and a jump-to-packet / jump-to-event link */
 function showEdgeTriggers(ev, edge, triggers, def) {
   closeEdgePop();
   const evName = Array.isArray(edge.label) ? edge.label.join(' ') : (edge.label || '');
   const rows = triggers.map((t) => h('div', { class: 'smpop-row' },
     h('span', { class: 'mono smpop-ts' }, smFmtTime(t.ts)),
     h('span', { class: 'smpop-why', title: t.why || '' }, t.why || evName || (def && def.title) || ''),
-    (typeof t.n === 'number' && t.n > 0 && smJumpToPacket)
-      ? h('button', {
-          class: 'linklike mono smpop-pkt', type: 'button',
-          /* focus the main window: the jump may be clicked from a popup */
-          onclick: () => { const n = t.n; closeEdgePop(); smJumpToPacket(n); window.focus(); },
-        }, 'pkt ' + t.n)
-      : h('span', { class: 'dim mono smpop-nopkt',
-          title: 'not tied to a single packet (timer / derived event)' }, 'timer')));
+    edgeTrigLink(t)));
   const pop = h('div', { class: 'smpop', role: 'dialog' },
     h('div', { class: 'smpop-head' },
       h('span', { class: 'smpop-title' }, String(edge.from) + ' → ' + String(edge.to)),
@@ -2247,11 +2262,14 @@ function sessionView(app, id) {
      (both live in this closure; the hooks are module-level) */
   smFmtTime = fmtTime;
   smJumpToPacket = jumpToPacket;
+  smJumpToEvent = jumpToEvent;
+  smTransEventIdx = transEventIdx;
   /* ── mutable view state ── */
   const S = {
     meta: null,
     events: [],              /* dense array indexed by event index i */
     nToI: new Map(),         /* packet number n -> event index i (packet events) */
+    transIdx: new Map(),     /* transition key (from|to|why|ts) -> event index i */
     filtered: [],            /* event indices passing the filters, ascending */
     protoOn: new Set(PROTOCOLS),
     kindOn: new Set(KINDS),
@@ -2520,6 +2538,13 @@ function sessionView(app, id) {
       if (S.events[e.i]) continue;                 /* dedup (WS reattach, overlap) */
       S.events[e.i] = e;
       if (e.kind === 'packet' && e.n > 0 && !S.nToI.has(e.n)) S.nToI.set(e.n, e.i);
+      if (e.kind === 'transition') {
+        /* index derived (timer/event-driven) transitions so a machine-history
+           entry can link straight to its transition event in the table */
+        const f = e.fields || {};
+        const key = (f.from || '') + '\x1f' + (f.to || '') + '\x1f' + (f.why || '') + '\x1f' + e.ts;
+        if (!S.transIdx.has(key)) S.transIdx.set(key, e.i);
+      }
       if (e.i === TL.count) tlPush(e.i, e.n, e.ts, e.proto, e.kind, e.type);
       if (passes(e)) S.filtered.push(e.i);
       added = true;
@@ -2907,6 +2932,21 @@ function sessionView(app, id) {
     }
   }
 
+  /* Select an event by its index — the same select+scroll+inspect behaviour as
+     a packet link (including force-including it when the filter would hide it).
+     Used for derived transitions (timer/event-driven, no causing packet). */
+  function jumpToEvent(i) {
+    if (typeof i === 'number' && i >= 0) selectEvent(i, { scroll: true, inspect: true });
+  }
+  /* event index of the transition event matching a machine-history entry
+     (from|to|why|ts), or -1 if not found / not loaded yet */
+  function transEventIdx(t) {
+    if (!t) return -1;
+    const key = (t.from || '') + '\x1f' + (t.to || '') + '\x1f' + (t.why || '') + '\x1f' + t.ts;
+    const i = S.transIdx.get(key);
+    return i === undefined ? -1 : i;
+  }
+
   function onKey(ev) {
     if (S.tab === 'notes' && (ev.ctrlKey || ev.metaKey) && !ev.altKey
         && (ev.key === 's' || ev.key === 'S')) {
@@ -3143,6 +3183,22 @@ function sessionView(app, id) {
   /* ────────── inspector: state tab ────────── */
   /* (stateClass/stateBadge/kvList are module-level, shared with the admin view) */
 
+  /* the jump link for one history transition: its causing packet ("pkt N") if
+     there is one, else — for a timer/event-driven transition — the transition
+     event itself ("◆ event"), matching how packet links behave. */
+  function histLink(t) {
+    if (typeof t.n === 'number' && t.n > 0)
+      return h('button', { class: 'linklike mono', type: 'button', onclick: () => jumpToPacket(t.n) }, 'pkt ' + t.n);
+    const ei = transEventIdx(t);
+    if (ei >= 0)
+      return h('button', {
+        class: 'linklike mono', type: 'button',
+        title: 'go to this derived state event in the table / timeline',
+        onclick: () => jumpToEvent(ei),
+      }, '◆ event');
+    return null;
+  }
+
   function historyBlock(hist) {
     if (!Array.isArray(hist) || !hist.length) return null;
     return h('details', { class: 'history' },
@@ -3154,9 +3210,7 @@ function sessionView(app, id) {
           h('span', { class: 'dim' }, '→'),
           stateBadge(t.to, true),
           h('span', { class: 'hist-why', title: t.why || '' }, t.why || ''),
-          (typeof t.n === 'number' && t.n > 0)
-            ? h('button', { class: 'linklike mono', type: 'button', onclick: () => jumpToPacket(t.n) }, 'pkt ' + t.n)
-            : null,
+          histLink(t),
         )),
       ),
     );
